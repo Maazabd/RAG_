@@ -18,8 +18,43 @@ if "theme" not in st.session_state:
 
 # Shared UI constants/state defaults
 DOC_DEFAULT_OPTION = "-- Select a Document to View --"
+
+# Initialize all session state variables at the top
 if "return_to_qa" not in st.session_state:
     st.session_state.return_to_qa = False
+
+if "selected_doc_name" not in st.session_state:
+    st.session_state.selected_doc_name = DOC_DEFAULT_OPTION
+
+if "pending_delete_doc" not in st.session_state:
+    st.session_state.pending_delete_doc = None
+
+if "rag" not in st.session_state:
+    st.session_state.rag = None
+
+if "sidebar_feedback" not in st.session_state:
+    st.session_state.sidebar_feedback = None
+
+if "pdf_zoom" not in st.session_state:
+    st.session_state.pdf_zoom = 100
+
+if "active_pdf_doc" not in st.session_state:
+    st.session_state.active_pdf_doc = None
+
+if "cached_suggested_questions" not in st.session_state:
+    st.session_state.cached_suggested_questions = []
+
+if "selected_sample_query" not in st.session_state:
+    st.session_state.selected_sample_query = None
+
+if "last_ingested_files_count" not in st.session_state:
+    st.session_state.last_ingested_files_count = 0
+
+if "query_input" not in st.session_state:
+    st.session_state.query_input = ""
+
+if "run_query_now" not in st.session_state:
+    st.session_state.run_query_now = False
 
 # Handle return action before creating sidebar widgets so selectbox state can be safely reset
 if st.session_state.return_to_qa:
@@ -373,27 +408,13 @@ CUSTOM_CSS = f"""
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-# Session State for RAGEngine
-if "rag" not in st.session_state:
+# Initialize RAGEngine if not already done
+if st.session_state.rag is None:
     with st.spinner("Initializing Chroma DB & Embedding Models..."):
         st.session_state.rag = RAGEngine()
 
+
 rag = st.session_state.rag
-
-if "selected_doc_name" not in st.session_state:
-    st.session_state.selected_doc_name = DOC_DEFAULT_OPTION
-
-if "pending_delete_doc" not in st.session_state:
-    st.session_state.pending_delete_doc = None
-
-if "sidebar_feedback" not in st.session_state:
-    st.session_state.sidebar_feedback = None
-
-if "pdf_zoom" not in st.session_state:
-    st.session_state.pdf_zoom = 100
-
-if "active_pdf_doc" not in st.session_state:
-    st.session_state.active_pdf_doc = None
 
 # Sidebar Configuration
 with st.sidebar:
@@ -675,21 +696,9 @@ else:
             st.session_state.query_input = ""
             st.session_state.run_query_now = False
         
-        # Handle sample query state
-        if "selected_sample_query" not in st.session_state:
-            st.session_state.selected_sample_query = None
-
-        if "query_input" not in st.session_state:
-            st.session_state.query_input = ""
-
-        if "run_query_now" not in st.session_state:
-            st.session_state.run_query_now = False
-        
-        # Cache suggested questions in session state to maintain stability
-        if "cached_suggested_questions" not in st.session_state:
+        # Initialize suggested questions on first load
+        if not st.session_state.cached_suggested_questions:
             st.session_state.cached_suggested_questions = rag.get_suggested_questions(os.getcwd())
-        
-        if "last_ingested_files_count" not in st.session_state:
             st.session_state.last_ingested_files_count = len(ingested_files)
         
         # Regenerate questions if document count changes
