@@ -51,6 +51,38 @@ A modern **Retrieval-Augmented Generation (RAG)** system powered by **ChromaDB**
 
    The app will open at `http://localhost:8501`
 
+## 🌐 Deploy to Streamlit Cloud
+
+### Deploy in 3 Steps:
+
+1. **Push to GitHub**
+   ```bash
+   git init
+   git add .
+   git commit -m "Initial commit"
+   git push -u origin main
+   ```
+
+2. **Create Streamlit Cloud App**
+   - Go to [share.streamlit.io](https://share.streamlit.io)
+   - Click "New app"
+   - Connect your GitHub repository
+   - Select `main.py` as the entry point
+
+3. **Add Secrets**
+   - In Streamlit Cloud dashboard, click **Settings** → **Secrets**
+   - Add your Groq API key:
+   ```toml
+   GROQ_API_KEY = "your_groq_api_key_here"
+   ```
+
+### Files Included for Cloud Deployment:
+- `.streamlit/config.toml` - Streamlit configuration
+- `requirements.txt` - All pinned dependencies
+- `.gitignore` - Excludes `.env` and sensitive files
+
+---
+
 ## 📖 How to Use
 
 ### 1. **Upload Documents**
@@ -138,6 +170,11 @@ pip install sentence_transformers
 ### Groq API errors
 - Verify API key is correct in `.env`
 - Check [Groq Console](https://console.groq.com) for rate limits
+
+### "SentenceTransformerEmbeddingFunction error" (Streamlit Cloud)
+- This is handled automatically by environment variables set in `rag_engine.py`
+- Ensure `.streamlit/config.toml` is in your repository
+- Make sure all requirements are pinned in `requirements.txt`
 
 ## 📊 How It Works
 

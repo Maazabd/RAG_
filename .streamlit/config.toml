@@ -1,0 +1,19 @@
+[client]
+showErrorDetails = false
+
+[logger]
+level = "error"
+
+[theme]
+primaryColor = "#4f46e5"
+backgroundColor = "#f8fafc"
+secondaryBackgroundColor = "#e2e8f0"
+textColor = "#0f172a"
+font = "sans serif"
+
+[server]
+maxUploadSize = 200
+enableXsrfProtection = true
+
+[client.toolbarMode]
+embed = "minimal"

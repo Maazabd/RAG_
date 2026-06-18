@@ -9,6 +9,10 @@ from chromadb.utils import embedding_functions
 from groq import Groq
 from dotenv import load_dotenv
 
+# Set environment variables for compatibility with Streamlit Cloud
+os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+os.environ['SENTENCE_TRANSFORMERS_HOME'] = '/tmp/sentence_transformers/'
+
 # Load environment variables
 load_dotenv()
 
