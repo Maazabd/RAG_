@@ -102,6 +102,7 @@ class RAGEngine:
     def ingest_documents(self, pdf_directory: str) -> dict:
         """Finds all PDF files in the directory, chunks them, and adds them to Chroma DB."""
         pdf_files = glob.glob(os.path.join(pdf_directory, "*.pdf"))
+        print(f"DEBUG: Found {len(pdf_files)} PDF files: {pdf_files}")
         if not pdf_files:
             return {"status": "error", "message": "No PDF files found in workspace."}
 
@@ -117,11 +118,17 @@ class RAGEngine:
         )
 
         all_chunks = []
+        failed_files = []
         for pdf_path in pdf_files:
-            pages = self.extract_text_from_pdf(pdf_path)
-            for page in pages:
-                chunks = self.split_text(page["text"], page["metadata"])
-                all_chunks.extend(chunks)
+            try:
+                pages = self.extract_text_from_pdf(pdf_path)
+                print(f"DEBUG: Extracted {len(pages)} pages from {os.path.basename(pdf_path)}")
+                for page in pages:
+                    chunks = self.split_text(page["text"], page["metadata"])
+                    all_chunks.extend(chunks)
+            except Exception as e:
+                print(f"DEBUG: Error processing {pdf_path}: {e}")
+                failed_files.append(os.path.basename(pdf_path))
 
         if not all_chunks:
             return {"status": "error", "message": "Could not extract any text from the PDF files."}
@@ -149,6 +156,10 @@ class RAGEngine:
             except Exception:
                 pass
 
+        # Verify ingestion worked
+        ingested = self.get_ingested_files()
+        print(f"DEBUG: After ingestion, ingested files are: {ingested}")
+        
         return {
             "status": "success",
             "message": f"Successfully ingested {len(pdf_files)} files into {len(all_chunks)} chunks.",
@@ -214,7 +225,7 @@ class RAGEngine:
         return []
 
     def get_suggested_questions(self, pdf_directory: str) -> list[str]:
-        """Loads suggested questions from file, or generates them if not present."""
+        """Generates fresh suggested questions based on currently indexed documents."""
         import json
         json_path = os.path.join(pdf_directory, "suggested_questions.json")
         default_questions = [
@@ -224,19 +235,21 @@ class RAGEngine:
             "What does a shop owner do in the Inventory Management System?"
         ]
         
+        # Check if cached file exists and return it
         if os.path.exists(json_path):
             try:
                 with open(json_path, "r") as f:
                     questions = json.load(f)
-                    if len(questions) == 4:
-                        return questions
-            except Exception:
-                pass
-                
-        # If not present or error, generate them
+                    if questions and len(questions) >= 4:
+                        print(f"DEBUG: Loaded {len(questions)} cached questions from file")
+                        return questions[:4]
+            except Exception as e:
+                print(f"DEBUG: Error reading cached questions: {e}")
+        
+        # Generate fresh questions only if no cache exists
         if self.groq_client:
             try:
-                # Extract first page/snippet of each PDF
+                # Extract first page/snippet of each PDF to generate fresh questions
                 pdf_files = glob.glob(os.path.join(pdf_directory, "*.pdf"))
                 text_samples = []
                 for pdf_path in pdf_files:
@@ -281,6 +294,7 @@ class RAGEngine:
                     if len(questions) == 4:
                         with open(json_path, "w") as f:
                             json.dump(questions, f)
+                        print(f"DEBUG: Generated and cached 4 new questions")
                         return questions
             except Exception as e:
                 print("Error generating suggested questions:", e)
@@ -290,11 +304,32 @@ class RAGEngine:
     def get_ingested_files(self) -> list[str]:
         """Returns list of distinct source PDF files that have been indexed."""
         try:
-            results = self.collection.get()
-            if results and results.get("metadatas"):
-                sources = {meta.get("source") for meta in results["metadatas"] if meta and meta.get("source")}
+            # Get all items from collection - use large offset/limit to retrieve all records
+            # ChromaDB get() retrieves with pagination, so we use a very large number
+            all_metadatas = []
+            offset = 0
+            batch_size = 500
+            
+            while True:
+                results = self.collection.get(offset=offset, limit=batch_size)
+                print(f"DEBUG get_ingested_files: offset={offset}, got {len(results.get('metadatas', []))} records")
+                if not results or not results.get("metadatas"):
+                    break
+                all_metadatas.extend(results["metadatas"])
+                
+                # If we got fewer results than batch size, we've reached the end
+                if len(results.get("metadatas", [])) < batch_size:
+                    break
+                    
+                offset += batch_size
+            
+            print(f"DEBUG get_ingested_files: total metadatas collected: {len(all_metadatas)}")
+            if all_metadatas:
+                sources = {meta.get("source") for meta in all_metadatas if meta and meta.get("source")}
+                print(f"DEBUG get_ingested_files: unique sources found: {sources}")
                 return sorted(list(sources))
-        except Exception:
+        except Exception as e:
+            print(f"Error getting ingested files: {e}")
             pass
         return []
 

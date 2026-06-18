@@ -12,7 +12,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Theme selection initialization
+# Theme selection - Light mode only
 if "theme" not in st.session_state:
     st.session_state.theme = "light"
 
@@ -26,46 +26,25 @@ if st.session_state.return_to_qa:
     st.session_state.selected_doc_name = DOC_DEFAULT_OPTION
     st.session_state.return_to_qa = False
 
-# Define theme variables
-if st.session_state.theme == "dark":
-    BG_COLOR = "#080c14"
-    TEXT_COLOR = "#f8fafc"
-    SUB_TEXT_COLOR = "#94a3b8"
-    CARD_BG = "rgba(30, 41, 59, 0.45)"
-    CARD_BORDER = "rgba(255, 255, 255, 0.12)"
-    CARD_SHADOW = "rgba(0, 0, 0, 0.45)"
-    INPUT_BG = "#151e2e"
-    INPUT_COLOR = "#ffffff"
-    INPUT_BORDER = "rgba(255, 255, 255, 0.2)"
-    SIDEBAR_BG = "#0b0e17"
-    SIDEBAR_BORDER = "rgba(255, 255, 255, 0.08)"
-    HEADER_GRADIENT = "linear-gradient(135deg, rgba(20, 25, 40, 0.85) 0%, rgba(8, 12, 20, 0.95) 100%)"
-    BADGE_BG = "rgba(99, 102, 241, 0.25)"
-    BADGE_BORDER = "rgba(99, 102, 241, 0.45)"
-    BADGE_COLOR = "#cbd5e1"
-    # Button colors for high readability in dark mode without hovering
-    BTN_BG = "#3b82f6" 
-    BTN_TEXT = "#ffffff"
-    BTN_BORDER = "transparent"
-else:
-    BG_COLOR = "#f8fafc"
-    TEXT_COLOR = "#0f172a"
-    SUB_TEXT_COLOR = "#475569"
-    CARD_BG = "rgba(255, 255, 255, 0.95)"
-    CARD_BORDER = "rgba(0, 0, 0, 0.1)"
-    CARD_SHADOW = "rgba(0, 0, 0, 0.06)"
-    INPUT_BG = "#ffffff"
-    INPUT_COLOR = "#0f172a"
-    INPUT_BORDER = "rgba(0, 0, 0, 0.2)"
-    SIDEBAR_BG = "#f1f5f9"
-    SIDEBAR_BORDER = "rgba(0, 0, 0, 0.08)"
-    HEADER_GRADIENT = "linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(241, 245, 249, 0.98) 100%)"
-    BADGE_BG = "rgba(79, 70, 229, 0.1)"
-    BADGE_BORDER = "rgba(79, 70, 229, 0.25)"
-    BADGE_COLOR = "#4f46e5"
-    BTN_BG = "#f1f5f9"
-    BTN_TEXT = "#0f172a"
-    BTN_BORDER = "#cbd5e1"
+# Define theme variables - Light mode only
+BG_COLOR = "#f8fafc"
+TEXT_COLOR = "#0f172a"
+SUB_TEXT_COLOR = "#475569"
+CARD_BG = "rgba(255, 255, 255, 0.95)"
+CARD_BORDER = "rgba(0, 0, 0, 0.1)"
+CARD_SHADOW = "rgba(0, 0, 0, 0.06)"
+INPUT_BG = "#ffffff"
+INPUT_COLOR = "#0f172a"
+INPUT_BORDER = "rgba(0, 0, 0, 0.2)"
+SIDEBAR_BG = "#f1f5f9"
+SIDEBAR_BORDER = "rgba(0, 0, 0, 0.08)"
+HEADER_GRADIENT = "linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(241, 245, 249, 0.98) 100%)"
+BADGE_BG = "rgba(79, 70, 229, 0.1)"
+BADGE_BORDER = "rgba(79, 70, 229, 0.25)"
+BADGE_COLOR = "#4f46e5"
+BTN_BG = "#f1f5f9"
+BTN_TEXT = "#0f172a"
+BTN_BORDER = "#cbd5e1"
 
 # Apply theme CSS styles dynamically
 CUSTOM_CSS = f"""
@@ -422,17 +401,10 @@ with st.sidebar:
     st.markdown("<h2 style='margin-top: 0.5rem; margin-bottom: 0px;'>DocuSense RAG</h2>", unsafe_allow_html=True)
     st.markdown("<p style='color: #64748b; font-size: 0.85rem; margin-bottom: 1rem;'>ChromaDB + Groq Assistant</p>", unsafe_allow_html=True)
     
-    # ☀️/🌙 Mode switcher shifted to the top of the sidebar
-    theme_icon = "☀️" if st.session_state.theme == "dark" else "🌙"
-    theme_label = "Light Mode" if st.session_state.theme == "dark" else "Dark Mode"
-    if st.button(f"{theme_icon} Switch to {theme_label}", key="theme_toggle_btn", use_container_width=True):
-        st.session_state.theme = "light" if st.session_state.theme == "dark" else "dark"
-        st.rerun()
-        
     st.write("---")
 
-    # Document list with per-file actions
-    st.markdown("### 📁 Document Index")
+    # Document list - clickable to open
+    st.markdown("### 📄 Documents")
     ingested_files = rag.get_ingested_files()
 
     # Keep selected document consistent with current index state
@@ -440,34 +412,31 @@ with st.sidebar:
         st.session_state.selected_doc_name = DOC_DEFAULT_OPTION
 
     selected_doc = st.session_state.selected_doc_name
-
-    feedback = st.session_state.sidebar_feedback
-    if feedback:
-        if feedback["kind"] == "success":
-            st.success(feedback["msg"])
-        elif feedback["kind"] == "error":
-            st.error(feedback["msg"])
-        else:
-            st.warning(feedback["msg"])
-        st.session_state.sidebar_feedback = None
-
+    
     if ingested_files:
-        st.markdown("<p class='doc-card-hint'>Click a file name to open it. Use the trash icon to delete.</p>", unsafe_allow_html=True)
         for idx, file_name in enumerate(ingested_files):
-            with st.container(border=True):
-                c_name, c_del = st.columns([10, 1], gap="small")
-                with c_name:
-                    is_active = file_name == selected_doc
-                    file_label = f"● {file_name}" if is_active else file_name
-                    if st.button(file_label, key=f"open_doc_{idx}", use_container_width=True, type="tertiary"):
-                        st.session_state.selected_doc_name = file_name
-                        st.rerun()
-                with c_del:
-                    if st.button("🗑", key=f"delete_icon_{idx}", help=f"Delete {file_name}", type="tertiary"):
-                        st.session_state.pending_delete_doc = file_name
-                        st.rerun()
+            is_active = file_name == selected_doc
+            file_label = f"● {file_name}" if is_active else f"  {file_name}"
+            if st.button(file_label, key=f"sidebar_doc_{idx}", use_container_width=True):
+                st.session_state.selected_doc_name = file_name
+                st.rerun()
     else:
-        st.warning("No documents indexed yet.")
+        st.caption("No documents indexed yet")
+    
+    st.write("---")
+    
+    # Document management section
+    st.markdown("### 🛠️ Document Management")
+    
+    if ingested_files:
+        for idx, file_name in enumerate(ingested_files):
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.caption(f"📄 {file_name}")
+            with col2:
+                if st.button("🗑", key=f"delete_icon_{idx}", help=f"Delete {file_name}"):
+                    st.session_state.pending_delete_doc = file_name
+                    st.rerun()
 
     st.write("---")
     st.markdown(
@@ -618,15 +587,15 @@ if selected_doc != DOC_DEFAULT_OPTION:
                     st.session_state.return_to_qa = True
                     st.rerun()
             with t2:
-                if st.button("－ Zoom", key="zoom_out_btn", use_container_width=True, type="tertiary"):
+                if st.button("－ Zoom", key="zoom_out_btn", use_container_width=True, type="secondary"):
                     st.session_state.pdf_zoom = max(50, st.session_state.pdf_zoom - 25)
                     st.rerun()
             with t3:
-                if st.button("＋ Zoom", key="zoom_in_btn", use_container_width=True, type="tertiary"):
+                if st.button("＋ Zoom", key="zoom_in_btn", use_container_width=True, type="secondary"):
                     st.session_state.pdf_zoom = min(300, st.session_state.pdf_zoom + 25)
                     st.rerun()
             with t4:
-                if st.button("Reset", key="zoom_reset_btn", use_container_width=True, type="tertiary"):
+                if st.button("Reset", key="zoom_reset_btn", use_container_width=True, type="secondary"):
                     st.session_state.pdf_zoom = 100
                     st.rerun()
             with t5:
@@ -715,6 +684,19 @@ else:
 
         if "run_query_now" not in st.session_state:
             st.session_state.run_query_now = False
+        
+        # Cache suggested questions in session state to maintain stability
+        if "cached_suggested_questions" not in st.session_state:
+            st.session_state.cached_suggested_questions = rag.get_suggested_questions(os.getcwd())
+        
+        if "last_ingested_files_count" not in st.session_state:
+            st.session_state.last_ingested_files_count = len(ingested_files)
+        
+        # Regenerate questions if document count changes
+        current_files_count = len(ingested_files)
+        if current_files_count != st.session_state.last_ingested_files_count:
+            st.session_state.cached_suggested_questions = rag.get_suggested_questions(os.getcwd())
+            st.session_state.last_ingested_files_count = current_files_count
 
         auto_trigger = False
         if st.session_state.selected_sample_query:
@@ -737,7 +719,7 @@ else:
                 key="clear_query_btn",
                 help="Clear query",
                 use_container_width=True,
-                type="tertiary",
+                type="secondary",
                 on_click=_clear_query_text
             )
 
@@ -826,22 +808,22 @@ else:
                                 })
                         
                         if matched_sources:
-                            st.markdown("<h4 style='margin-bottom: 12px;'>🔍 Extracted Source References</h4>", unsafe_allow_html=True)
-                            for idx, ms in enumerate(matched_sources):
-                                st.markdown(
-                                    f"""
-                                    <div class="glass-card" style="margin-bottom: 15px; padding: 18px; border-left: 4px solid #a855f7;">
-                                        <div style="margin-bottom: 10px;">
-                                            <span class="source-badge">📄 {ms['source']}</span>
-                                            <span class="page-badge">Page {ms['page']}</span>
+                            with st.expander("📄 View Source References", expanded=False):
+                                for idx, ms in enumerate(matched_sources):
+                                    st.markdown(
+                                        f"""
+                                        <div class="glass-card" style="margin-bottom: 15px; padding: 18px; border-left: 4px solid #a855f7;">
+                                            <div style="margin-bottom: 10px;">
+                                                <span class="source-badge">📄 {ms['source']}</span>
+                                                <span class="page-badge">Page {ms['page']}</span>
+                                            </div>
+                                            <div style="font-size: 1.02rem; line-height: 1.55; color: {TEXT_COLOR}; font-style: italic;">
+                                                "{ms['text']}"
+                                            </div>
                                         </div>
-                                        <div style="font-size: 1.02rem; line-height: 1.55; color: {TEXT_COLOR}; font-style: italic;">
-                                            "{ms['text']}"
-                                        </div>
-                                    </div>
-                                    """,
-                                    unsafe_allow_html=True
-                                )
+                                        """,
+                                        unsafe_allow_html=True
+                                    )
                         else:
                             st.info("Citations were returned, but supporting blocks could not be matched.")
                     else:
@@ -851,8 +833,8 @@ else:
         # 2. Next display suggested questions (BELOW the answer and search results)
         st.markdown("<p style='font-size: 0.88rem; margin-top: 15px; margin-bottom: 8px; opacity: 0.85; font-weight: 600;'>💡 Suggested Questions (Click to Ask):</p>", unsafe_allow_html=True)
         
-        # Load sample questions dynamically based on current indexed files (regenerated if new uploads occur)
-        sample_questions = rag.get_suggested_questions(os.getcwd())
+        # Use cached suggested questions for stable button keys
+        sample_questions = st.session_state.cached_suggested_questions
         
         sq_cols = st.columns(2)
         for idx, sq in enumerate(sample_questions):
