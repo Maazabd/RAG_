@@ -1,5 +1,6 @@
 [client]
 showErrorDetails = false
+toolbarMode = "viewer"
 
 [logger]
 level = "error"
@@ -14,6 +15,3 @@ font = "sans serif"
 [server]
 maxUploadSize = 200
 enableXsrfProtection = true
-
-[client.toolbarMode]
-embed = "minimal"

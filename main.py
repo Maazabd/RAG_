@@ -416,6 +416,23 @@ if st.session_state.rag is None:
 
 rag = st.session_state.rag
 
+# Define callbacks at top level (must be outside conditionals)
+def _trigger_query_run():
+    st.session_state.run_query_now = True
+
+def _clear_query_text():
+    st.session_state.query_input = ""
+    st.session_state.run_query_now = False
+
+# Get ingested files list (used in both sidebar and main content)
+ingested_files = rag.get_ingested_files()
+
+# Keep selected document consistent with current index state
+if st.session_state.selected_doc_name not in ingested_files:
+    st.session_state.selected_doc_name = DOC_DEFAULT_OPTION
+
+selected_doc = st.session_state.selected_doc_name
+
 # Sidebar Configuration
 with st.sidebar:
     st.image("https://img.icons8.com/color/96/artificial-intelligence.png", width=60)
@@ -426,14 +443,7 @@ with st.sidebar:
 
     # Document list - clickable to open
     st.markdown("### 📄 Documents")
-    ingested_files = rag.get_ingested_files()
 
-    # Keep selected document consistent with current index state
-    if st.session_state.selected_doc_name not in ingested_files:
-        st.session_state.selected_doc_name = DOC_DEFAULT_OPTION
-
-    selected_doc = st.session_state.selected_doc_name
-    
     if ingested_files:
         for idx, file_name in enumerate(ingested_files):
             is_active = file_name == selected_doc
@@ -688,13 +698,6 @@ else:
     else:
         # Q&A Section
         st.markdown("### 💬 Ask a Question")
-
-        def _trigger_query_run():
-            st.session_state.run_query_now = True
-
-        def _clear_query_text():
-            st.session_state.query_input = ""
-            st.session_state.run_query_now = False
         
         # Initialize suggested questions on first load
         if not st.session_state.cached_suggested_questions:
