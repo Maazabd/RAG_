@@ -268,21 +268,22 @@ section[data-testid="stSidebar"] > div div.stButton > button[kind="primary"] {
 
 /* ── Feedback & Action Buttons ── */
 .action-btn-row {
-    display: flex; gap: 8px; margin-top: 8px;
+    display: flex; gap: 4px; margin-top: -10px; margin-bottom: 5px;
 }
 .action-btn-row div.stButton > button {
     background: transparent !important;
     border: none !important;
-    padding: 2px 6px !important;
-    font-size: 0.9rem !important;
+    padding: 0px 4px !important;
+    font-size: 0.8rem !important;
     box-shadow: none !important;
     color: #94a3b8 !important;
     min-height: 0 !important;
     line-height: 1 !important;
+    width: auto !important;
 }
 .action-btn-row div.stButton > button:hover {
     background: rgba(0,0,0,0.05) !important;
-    transform: none !important;
+    transform: scale(1.05) !important;
 }
 
 /* ── Source badges ── */
@@ -440,7 +441,7 @@ def _export_pdf(msgs: list, title: str) -> bytes:
     pdf.set_font("helvetica", size=12)
     
     pdf.set_font("helvetica", style="B", size=16)
-    pdf.cell(200, 10, txt=title, ln=True, align="C")
+    pdf.multi_cell(0, 10, txt=title, align="C")
     pdf.set_font("helvetica", size=12)
     pdf.ln(10)
     
@@ -828,7 +829,8 @@ else:
                     )
                     
                     st.markdown("<div class='action-btn-row'>", unsafe_allow_html=True)
-                    c1, c2, c3, _ = st.columns([1, 1, 1, 10])
+                    # Use smaller column ratios to pack them tightly
+                    c1, c2, c3, _ = st.columns([0.4, 0.4, 0.4, 8.8])
                     with c1:
                         if st.button("📋", key=f"copy_{idx}", help="Copy to clipboard"):
                             st.toast("Answer ready to copy! (Highlight text and use Ctrl+C)", icon="📋")
