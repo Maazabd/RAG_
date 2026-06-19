@@ -1,5 +1,6 @@
 import os
 import streamlit as st
+import streamlit.components.v1 as components
 import base64
 import re
 from rag_engine import RAGEngine
@@ -686,18 +687,35 @@ if selected_doc != DOC_DEFAULT_OPTION:
                     key="download_open_pdf"
                 )
 
-            # Use the PDF viewer's native zoom parameter for reliable, crisp scaling
-            pdf_src = (
-                f"data:application/pdf;base64,{base64_pdf}"
-                f"#toolbar=0&navpanes=0&scrollbar=0&zoom={st.session_state.pdf_zoom}"
-            )
-
-            pdf_display = (
-                f'<div class="viewer-frame-wrap"><div class="viewer-frame-inner">'
-                f'<iframe class="viewer-frame" src="{pdf_src}"></iframe>'
-                f'</div></div>'
-            )
-            st.markdown(pdf_display, unsafe_allow_html=True)
+            # Use a Blob URL so Edge/Chrome security policies don't block the PDF.
+            # data: URIs in iframes are blocked by Edge — Blob URLs are not.
+            zoom = st.session_state.pdf_zoom
+            pdf_html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  html, body {{ margin: 0; padding: 0; height: 100%; background: #fff; }}
+  iframe {{ width: 100%; height: 100%; border: none; display: block; }}
+</style>
+</head>
+<body>
+<iframe id="pf"></iframe>
+<script>
+  (function() {{
+    var b64 = "{base64_pdf}";
+    var bin = atob(b64);
+    var buf = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+    var blob = new Blob([buf], {{type: 'application/pdf'}});
+    var url = URL.createObjectURL(blob);
+    document.getElementById('pf').src = url + '#toolbar=0&navpanes=0&scrollbar=0&zoom={zoom}';
+  }})();
+</script>
+</body>
+</html>
+"""
+            components.html(pdf_html, height=760, scrolling=False)
             
         except Exception as e:
             st.error(f"Error loading PDF: {e}")
