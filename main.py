@@ -435,38 +435,7 @@ def _export_txt(msgs: list) -> str:
     return "\n".join(lines)
 
 
-def _export_pdf(msgs: list, title: str) -> bytes:
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("helvetica", size=12)
-    
-    pdf.set_font("helvetica", style="B", size=16)
-    pdf.multi_cell(0, 10, txt=title, align="C")
-    pdf.set_font("helvetica", size=12)
-    pdf.ln(10)
-    
-    for m in msgs:
-        role = "User" if m["role"] == "user" else "DocuSense"
-        pdf.set_font("helvetica", style="B", size=12)
-        pdf.multi_cell(0, 10, txt=f"{role}:")
-        pdf.set_font("helvetica", size=11)
-        # remove emojis which FPDF might struggle with
-        content = m['content'].encode("latin-1", "ignore").decode("latin-1")
-        pdf.multi_cell(0, 8, txt=content)
-        if role == "DocuSense" and m.get("citations"):
-            pdf.ln(2)
-            pdf.set_font("helvetica", style="I", size=10)
-            pdf.multi_cell(0, 6, txt="Sources:")
-            for c in m["citations"]:
-                source_txt = f"  - {c.get('source', '')} (Page {c.get('page', '')})"
-                source_txt = source_txt.encode("latin-1", "ignore").decode("latin-1")
-                pdf.multi_cell(0, 6, txt=source_txt)
-        pdf.ln(5)
-        pdf.set_font("helvetica", size=10)
-        pdf.cell(0, 0, txt="-" * 60, ln=True)
-        pdf.ln(5)
-    
-    return pdf.output(dest="S").encode("latin1", "replace")  # output to string and encode
+
 
 def _open_conv(conv_id: str):
     conv = cm.load(conv_id)
@@ -545,12 +514,7 @@ with st.sidebar:
             
             txt_data = _export_txt(msgs)
             st.download_button("Export as TXT", data=txt_data, file_name=f"{title}.txt", mime="text/plain", use_container_width=True)
-            
-            try:
-                pdf_data = _export_pdf(msgs, title)
-                st.download_button("Export as PDF", data=pdf_data, file_name=f"{title}.pdf", mime="application/pdf", use_container_width=True)
-            except Exception as e:
-                st.error(f"PDF export error: {e}")
+
 
     # ── Conversation history ──
     search_query = st_keyup("🔍 Search chats...", key="chat_search", label_visibility="collapsed", placeholder="🔍 Search chats...")
@@ -827,26 +791,7 @@ else:
                         msg.get("citations", []),
                         msg.get("sources", [])
                     )
-                    
-                    st.markdown("<div class='action-btn-row'>", unsafe_allow_html=True)
-                    # Use smaller column ratios to pack them tightly
-                    c1, c2, c3, _ = st.columns([0.4, 0.4, 0.4, 8.8])
-                    with c1:
-                        if st.button("📋", key=f"copy_{idx}", help="Copy to clipboard"):
-                            st.toast("Answer ready to copy! (Highlight text and use Ctrl+C)", icon="📋")
-                    with c2:
-                        up_color = "🟢" if msg.get("feedback") == "up" else "👍"
-                        if st.button(up_color, key=f"up_{idx}", help="Good response"):
-                            msg["feedback"] = "up"
-                            cm.save(st.session_state.current_conv)
-                            st.rerun()
-                    with c3:
-                        down_color = "🔴" if msg.get("feedback") == "down" else "👎"
-                        if st.button(down_color, key=f"down_{idx}", help="Bad response"):
-                            msg["feedback"] = "down"
-                            cm.save(st.session_state.current_conv)
-                            st.rerun()
-                    st.markdown("</div>", unsafe_allow_html=True)
+
 
     # ── Process pending RAG query (runs after messages are shown) ──
     if st.session_state.pending_query:
