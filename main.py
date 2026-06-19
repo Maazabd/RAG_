@@ -7,6 +7,31 @@ from rag_engine import RAGEngine
 # Document directory path
 DOCS_DIR = os.path.join(os.getcwd(), "docs")
 
+# Google Drive folder ID (from the shared link)
+GDRIVE_FOLDER_ID = "1ujWlVColjvQzo6sJx7sxvdktT_u39Be1"
+
+
+def _download_docs_from_drive():
+    """Download PDFs from Google Drive into docs/ when the folder has no PDFs.
+    This only runs on Streamlit Cloud (or any environment) where docs/ is empty."""
+    os.makedirs(DOCS_DIR, exist_ok=True)
+    existing_pdfs = [f for f in os.listdir(DOCS_DIR) if f.lower().endswith(".pdf")]
+    if existing_pdfs:
+        return  # Already populated, skip download
+
+    try:
+        import gdown
+        url = f"https://drive.google.com/drive/folders/{GDRIVE_FOLDER_ID}"
+        gdown.download_folder(
+            url=url,
+            output=DOCS_DIR,
+            quiet=False,
+            use_cookies=False,
+            remaining_ok=True,
+        )
+    except Exception as e:
+        st.warning(f"⚠️ Could not download documents from Google Drive: {e}")
+
 
 # Set Page Config
 st.set_page_config(
@@ -412,10 +437,29 @@ CUSTOM_CSS = f"""
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
+# Download docs from Google Drive if running on cloud and docs/ is empty
+if "drive_download_done" not in st.session_state:
+    st.session_state.drive_download_done = False
+
+if not st.session_state.drive_download_done:
+    existing_pdfs = [f for f in os.listdir(DOCS_DIR) if f.lower().endswith(".pdf")] if os.path.isdir(DOCS_DIR) else []
+    if not existing_pdfs:
+        with st.spinner("☁️ Downloading documents from Google Drive..."):
+            _download_docs_from_drive()
+    st.session_state.drive_download_done = True
+
 # Initialize RAGEngine if not already done
 if st.session_state.rag is None:
     with st.spinner("Initializing Chroma DB & Embedding Models..."):
         st.session_state.rag = RAGEngine()
+
+# Auto-ingest after a fresh Drive download (ChromaDB will be empty but docs/ now has PDFs)
+if st.session_state.rag is not None:
+    ingested_count = len(st.session_state.rag.get_ingested_files())
+    pdf_count = len([f for f in os.listdir(DOCS_DIR) if f.lower().endswith(".pdf")]) if os.path.isdir(DOCS_DIR) else 0
+    if pdf_count > 0 and ingested_count == 0:
+        with st.spinner("⚙️ Indexing downloaded documents into ChromaDB..."):
+            st.session_state.rag.ingest_documents(DOCS_DIR)
 
 
 rag = st.session_state.rag
