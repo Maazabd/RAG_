@@ -27,7 +27,6 @@ def _download_docs_from_drive():
             output=DOCS_DIR,
             quiet=False,
             use_cookies=False,
-            remaining_ok=True,
         )
     except Exception as e:
         st.warning(f"⚠️ Could not download documents from Google Drive: {e}")
