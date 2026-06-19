@@ -734,9 +734,15 @@ else:
     if st.session_state.pending_query:
         query = st.session_state.pending_query
         st.session_state.pending_query = None
+
+        # Build chat history = everything BEFORE the current user message
+        # (the current user msg is the last item in msgs)
+        conv_msgs = (st.session_state.current_conv or {}).get("messages", [])
+        chat_history = conv_msgs[:-1] if len(conv_msgs) > 1 else []
+
         with st.chat_message("assistant", avatar="🤖"):
             with st.spinner("Thinking…"):
-                resp = rag.smart_query(query)
+                resp = rag.smart_query(query, chat_history=chat_history)
             intent    = resp.get("intent", "document_query")
             answer    = resp.get("answer", "")
             citations = resp.get("citations", [])

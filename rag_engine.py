@@ -454,23 +454,36 @@ class RAGEngine:
     # Intent detection & conversational routing
     # ──────────────────────────────────────────────────────────────
 
-    def classify_intent(self, message: str) -> str:
-        """Return 'conversational' or 'document_query' based on the user message.
+    def classify_intent(self, message: str, chat_history: list | None = None) -> str:
+        """Return 'conversational' or 'document_query'.
 
-        Uses a fast Groq call with a minimal prompt so latency is negligible.
-        Falls back to 'document_query' on any error so the RAG pipeline is always tried.
+        When chat_history is supplied the last exchange is included so the
+        classifier can correctly label follow-ups like 'what about sunday?'
+        as document_query rather than conversational.
         """
         if not self.groq_client:
             return "document_query"
 
+        # Include up to the last 2 turns for context
+        history_note = ""
+        if chat_history:
+            recent = chat_history[-4:]
+            lines = []
+            for m in recent:
+                role = "User" if m["role"] == "user" else "Assistant"
+                lines.append(f"{role}: {m['content']}")
+            history_note = "Recent conversation:\n" + "\n".join(lines) + "\n\n"
+
         system_prompt = (
             "You are an intent classifier for a document Q&A assistant. "
-            "Classify the user message as exactly one of:\n"
+            "Classify the LAST user message as exactly one of:\n"
             "  conversational  — greetings, small talk, questions about the assistant "
             "itself (name, capabilities, who made you, etc.), thanks, or any message "
             "that does NOT require searching documents.\n"
             "  document_query  — any request for specific information, facts, data, "
-            "summaries, or details that would come from documents.\n\n"
+            "summaries, or details that would come from documents. "
+            "This includes vague follow-ups like 'what about X?' or 'and Y?' when the "
+            "conversation context shows the user is asking about documents.\n\n"
             "Respond with ONLY one word: either 'conversational' or 'document_query'. "
             "No punctuation, no explanation."
         )
@@ -478,7 +491,7 @@ class RAGEngine:
             resp = self.groq_client.chat.completions.create(
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user",   "content": message}
+                    {"role": "user",   "content": f"{history_note}Classify this message: {message}"}
                 ],
                 model=GROQ_MODEL,
                 temperature=0.0,
@@ -491,11 +504,74 @@ class RAGEngine:
             print(f"Intent classification error: {e}")
         return "document_query"
 
-    def conversational_response(self, message: str) -> str:
-        """Generate a friendly, natural reply for conversational messages.
+    # ──────────────────────────────────────────────────────────────
 
-        The assistant introduces itself as DocuSense and reminds the user it
-        specialises in answering questions about their uploaded PDF documents.
+    def contextualize_query(self, query: str, chat_history: list) -> str:
+        """Rewrite a follow-up query into a fully standalone question.
+
+        Example
+        -------
+        History : User asked "is saturday off at N6 Solution?" → Answer: "Yes"
+        Follow-up: "what about sunday?"
+        Rewritten: "Is sunday also an off day at N6 Solution according to their policy?"
+
+        If the query is already self-contained, it is returned unchanged.
+        Falls back to the original query on any error.
+        """
+        if not self.groq_client or not chat_history:
+            return query
+
+        # Build a compact history string (last 3 exchanges = 6 messages)
+        recent = chat_history[-6:]
+        lines  = []
+        for m in recent:
+            role = "User" if m["role"] == "user" else "Assistant"
+            # Truncate long assistant answers to keep the prompt lean
+            content = m["content"]
+            if role == "Assistant" and len(content) > 300:
+                content = content[:300] + "…"
+            lines.append(f"{role}: {content}")
+        history_str = "\n".join(lines)
+
+        system_prompt = (
+            "You are a query rewriter for a document Q&A system. "
+            "Given a conversation history and a follow-up question, rewrite the follow-up "
+            "so it is a completely self-contained, unambiguous question that can be answered "
+            "without reading the prior conversation. "
+            "Preserve all specific details (names, entities, topics) from the history that "
+            "are needed to understand the question. "
+            "If the follow-up is already fully self-contained, return it UNCHANGED. "
+            "Respond with ONLY the rewritten question — no preamble, no explanation."
+        )
+        prompt = (
+            f"Conversation history:\n{history_str}\n\n"
+            f"Follow-up question: {query}\n\n"
+            "Standalone question:"
+        )
+        try:
+            resp = self.groq_client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": prompt}
+                ],
+                model=GROQ_MODEL,
+                temperature=0.0,
+                max_tokens=150,
+            )
+            rewritten = resp.choices[0].message.content.strip()
+            print(f"[ctx] '{query}'  →  '{rewritten}'")
+            return rewritten if rewritten else query
+        except Exception as e:
+            print(f"Query contextualization error: {e}")
+            return query
+
+    # ──────────────────────────────────────────────────────────────
+
+    def conversational_response(self, message: str, chat_history: list | None = None) -> str:
+        """Generate a friendly reply for conversational messages.
+
+        Includes recent conversation history so the assistant can give
+        coherent follow-up replies (e.g. "you're welcome!", "as I said…").
         """
         if not self.groq_client:
             return "Hi! I'm DocuSense, your document Q&A assistant. Ask me anything about your PDFs!"
@@ -503,18 +579,23 @@ class RAGEngine:
         system_prompt = (
             "You are DocuSense, a friendly and helpful AI assistant that specialises in "
             "answering questions about the user's uploaded PDF documents (powered by ChromaDB & Groq). "
-            "Respond naturally and warmly to the user's conversational message. "
+            "Respond naturally and warmly to the user's message. "
             "Keep replies concise (1-3 sentences). "
             "If the user asks what you can do, explain that you can search and answer questions "
             "from their indexed PDF documents with exact citations. "
             "Do NOT make up information about specific documents."
         )
+
+        # Build message list with history for continuity
+        messages: list[dict] = [{"role": "system", "content": system_prompt}]
+        if chat_history:
+            for m in chat_history[-6:]:   # last 3 exchanges
+                messages.append({"role": m["role"], "content": m["content"]})
+        messages.append({"role": "user", "content": message})
+
         try:
             resp = self.groq_client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user",   "content": message}
-                ],
+                messages=messages,
                 model=GROQ_MODEL,
                 temperature=0.7,
                 max_tokens=200,
@@ -524,25 +605,36 @@ class RAGEngine:
             print(f"Conversational response error: {e}")
             return "Hi! I'm DocuSense — ask me anything about your uploaded PDF documents."
 
-    def smart_query(self, message: str) -> dict:
-        """Unified entry point.
+    # ──────────────────────────────────────────────────────────────
 
-        1. Classifies the message as 'conversational' or 'document_query'.
-        2. For conversational messages → returns a friendly direct reply (no RAG, no citations).
-        3. For document queries      → runs the full RAG pipeline via query().
+    def smart_query(self, message: str, chat_history: list | None = None) -> dict:
+        """Unified entry point with conversation context support.
 
-        Return format is always:
-            {
-                "intent":    "conversational" | "document_query",
-                "answer":    str,
-                "citations": list,
-                "sources":   list,
-            }
+        Flow
+        ----
+        1. Classify intent (using history for better accuracy on follow-ups).
+        2a. Conversational → friendly reply with history for coherence.
+        2b. Document query →
+              i.  Rewrite query to be standalone using history.
+              ii. Run full RAG pipeline on the rewritten query.
+
+        Parameters
+        ----------
+        message      : The user's latest message.
+        chat_history : All previous messages in this conversation
+                       (list of {"role": ..., "content": ...} dicts),
+                       NOT including the current message.
+
+        Returns
+        -------
+        dict with keys: intent, answer, citations, sources
         """
-        intent = self.classify_intent(message)
+        history = chat_history or []
+
+        intent = self.classify_intent(message, history)
 
         if intent == "conversational":
-            answer = self.conversational_response(message)
+            answer = self.conversational_response(message, history)
             return {
                 "intent":    "conversational",
                 "answer":    answer,
@@ -550,7 +642,14 @@ class RAGEngine:
                 "sources":   [],
             }
 
-        # Document query — full RAG pipeline
-        result = self.query(message)
+        # Document query path
+        # Step 1: rewrite the query to be context-aware and standalone
+        if history:
+            standalone_query = self.contextualize_query(message, history)
+        else:
+            standalone_query = message
+
+        # Step 2: run the RAG pipeline on the standalone query
+        result = self.query(standalone_query)
         result["intent"] = "document_query"
         return result
