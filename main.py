@@ -1,4 +1,6 @@
 import os
+import time
+import threading
 import streamlit as st
 import streamlit.components.v1 as components
 import base64
@@ -30,7 +32,58 @@ def _download_docs_from_drive():
             use_cookies=False,
         )
     except Exception as e:
-        st.warning(f"⚠️ Could not download documents from Google Drive: {e}")
+        print(f"[AppInit] Could not download from Google Drive: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Module-level singleton — shared across ALL Streamlit reruns & sessions
+# in the same process. Initialization runs ONCE in a background daemon thread.
+# ---------------------------------------------------------------------------
+class _AppInit:
+    engine: "RAGEngine | None" = None
+    ready: bool = False
+    error: str | None = None
+    status: str = "Starting…"
+    _thread: "threading.Thread | None" = None
+    _lock = threading.Lock()
+
+
+def _background_init() -> None:
+    """Heavy startup work: Drive download → model load → ingest.
+    Runs off the main thread so the browser UI stays responsive."""
+    try:
+        # Step 1: Ensure PDFs are present (no-op locally, downloads on cloud)
+        _AppInit.status = "☁️ Checking / downloading documents…"
+        _download_docs_from_drive()
+
+        # Step 2: Load embedding model + connect ChromaDB (slow on first run)
+        _AppInit.status = "🧠 Loading embedding model & ChromaDB…"
+        engine = RAGEngine()
+
+        # Step 3: Auto-ingest if DB is empty but files exist
+        pdf_count = (
+            len([f for f in os.listdir(DOCS_DIR) if f.lower().endswith(".pdf")])
+            if os.path.isdir(DOCS_DIR) else 0
+        )
+        if pdf_count > 0 and engine.collection.count() == 0:
+            _AppInit.status = f"⚙️ Indexing {pdf_count} document(s) into ChromaDB…"
+            engine.ingest_documents(DOCS_DIR)
+
+        _AppInit.engine = engine
+        _AppInit.ready = True
+        _AppInit.status = "✅ Ready"
+    except Exception as exc:
+        _AppInit.error = str(exc)
+        _AppInit.status = f"❌ Initialization failed: {exc}"
+
+
+# Kick off background init exactly once per process (thread-safe)
+with _AppInit._lock:
+    if _AppInit._thread is None:
+        _AppInit._thread = threading.Thread(
+            target=_background_init, daemon=True, name="rag-init"
+        )
+        _AppInit._thread.start()
 
 
 # Set Page Config
@@ -57,9 +110,6 @@ if "selected_doc_name" not in st.session_state:
 
 if "pending_delete_doc" not in st.session_state:
     st.session_state.pending_delete_doc = None
-
-if "rag" not in st.session_state:
-    st.session_state.rag = None
 
 if "sidebar_feedback" not in st.session_state:
     st.session_state.sidebar_feedback = None
@@ -437,36 +487,67 @@ CUSTOM_CSS = f"""
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-# Download docs from Google Drive if running on cloud and docs/ is empty
-if "drive_download_done" not in st.session_state:
-    st.session_state.drive_download_done = False
+# ── Background init gate ─────────────────────────────────────────────────────
+# The background thread started at module load time. While it runs we show a
+# beautiful splash screen and auto-refresh every 1.5 s. The instant it sets
+# _AppInit.ready = True the normal app renders without any spinner.
+# ─────────────────────────────────────────────────────────────────────────────
+if not _AppInit.ready:
+    if _AppInit.error:
+        st.error(f"❌ Startup error: {_AppInit.error}")
+        st.stop()
 
-if not st.session_state.drive_download_done:
-    existing_pdfs = [f for f in os.listdir(DOCS_DIR) if f.lower().endswith(".pdf")] if os.path.isdir(DOCS_DIR) else []
-    if not existing_pdfs:
-        with st.spinner("☁️ Downloading documents from Google Drive..."):
-            _download_docs_from_drive()
-    st.session_state.drive_download_done = True
+    # Animated splash screen
+    st.markdown(
+        f"""
+        <div style="
+            display:flex; flex-direction:column; align-items:center;
+            justify-content:center; height:80vh; gap:24px;
+            background:linear-gradient(135deg,#f8fafc 0%,#eef2ff 100%);
+            border-radius:20px; margin-top:2rem;
+        ">
+            <div style="font-size:3.5rem;">📄</div>
+            <h2 style="
+                background:linear-gradient(90deg,#6366f1,#a855f7,#ec4899);
+                -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+                font-size:2rem; font-weight:800; margin:0;
+            ">DocuSense RAG Engine</h2>
+            <p style="color:#64748b; font-size:1.05rem; margin:0;">
+                {_AppInit.status}
+            </p>
+            <div style="
+                width:260px; height:6px; background:#e2e8f0;
+                border-radius:99px; overflow:hidden;
+            ">
+                <div style="
+                    height:100%;
+                    background:linear-gradient(90deg,#6366f1,#a855f7);
+                    border-radius:99px;
+                    animation:prog 1.8s ease-in-out infinite;
+                "></div>
+            </div>
+            <p style="color:#94a3b8; font-size:0.82rem; margin:0;">
+                First launch only — subsequent starts are instant ⚡
+            </p>
+        </div>
+        <style>
+            @keyframes prog {{
+                0%   {{ width:0%;   margin-left:0; }}
+                50%  {{ width:70%;  margin-left:15%; }}
+                100% {{ width:0%;   margin-left:100%; }}
+            }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    time.sleep(1.5)
+    st.rerun()
+    st.stop()
 
-# Initialize RAGEngine if not already done
-if st.session_state.rag is None:
-    with st.spinner("Initializing Chroma DB & Embedding Models..."):
-        st.session_state.rag = RAGEngine()
-
-# Auto-ingest after a fresh Drive download — guarded so it only runs once per session,
-# not on every Streamlit rerun (which would hammer ChromaDB with repeated queries).
-if "auto_ingest_done" not in st.session_state:
-    st.session_state.auto_ingest_done = False
-
-if st.session_state.rag is not None and not st.session_state.auto_ingest_done:
-    pdf_count = len([f for f in os.listdir(DOCS_DIR) if f.lower().endswith(".pdf")]) if os.path.isdir(DOCS_DIR) else 0
-    if pdf_count > 0 and st.session_state.rag.collection.count() == 0:
-        with st.spinner("⚙️ Indexing downloaded documents into ChromaDB..."):
-            st.session_state.rag.ingest_documents(DOCS_DIR)
-    st.session_state.auto_ingest_done = True
+# ── App is ready — wire up the engine ────────────────────────────────────────
+rag = _AppInit.engine
 
 
-rag = st.session_state.rag
 
 # Define callbacks at top level (must be outside conditionals)
 def _trigger_query_run():
