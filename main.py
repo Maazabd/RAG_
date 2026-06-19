@@ -691,35 +691,61 @@ if selected_doc != DOC_DEFAULT_OPTION:
                     key="download_open_pdf"
                 )
 
-            # Use a Blob URL so Edge/Chrome security policies don't block the PDF.
-            # data: URIs in iframes are blocked by Edge — Blob URLs are not.
+            # Render PDF using PDF.js (canvas-based) — works in Edge, Chrome, Firefox
+            # because it draws to <canvas> elements, bypassing all iframe/data-URI restrictions.
             zoom = st.session_state.pdf_zoom
-            pdf_html = f"""
-<!DOCTYPE html>
+            scale = round(zoom / 100.0, 2)
+            pdf_html = f"""<!DOCTYPE html>
 <html>
 <head>
+<meta charset="utf-8">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <style>
-  html, body {{ margin: 0; padding: 0; height: 100%; background: #fff; }}
-  iframe {{ width: 100%; height: 100%; border: none; display: block; }}
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  html, body {{ background: #e5e7eb; font-family: sans-serif; }}
+  #loading {{ text-align: center; padding: 32px; color: #6b7280; font-size: 13px; }}
+  #pdf-container {{ display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 12px; }}
+  canvas {{ background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.18); border-radius: 4px; display: block; }}
 </style>
 </head>
 <body>
-<iframe id="pf"></iframe>
+<div id="loading">⏳ Rendering PDF...</div>
+<div id="pdf-container"></div>
 <script>
-  (function() {{
-    var b64 = "{base64_pdf}";
-    var bin = atob(b64);
-    var buf = new Uint8Array(bin.length);
-    for (var i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
-    var blob = new Blob([buf], {{type: 'application/pdf'}});
-    var url = URL.createObjectURL(blob);
-    document.getElementById('pf').src = url + '#toolbar=0&navpanes=0&scrollbar=0&zoom={zoom}';
-  }})();
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+  var b64 = "{base64_pdf}";
+  var bin = atob(b64);
+  var buf = new Uint8Array(bin.length);
+  for (var i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+
+  pdfjsLib.getDocument({{data: buf}}).promise.then(function(pdf) {{
+    document.getElementById('loading').style.display = 'none';
+    var container = document.getElementById('pdf-container');
+    var scale = {scale};
+    var chain = Promise.resolve();
+    for (var p = 1; p <= pdf.numPages; p++) {{
+      (function(pageNum) {{
+        chain = chain.then(function() {{
+          return pdf.getPage(pageNum).then(function(page) {{
+            var vp = page.getViewport({{scale: scale}});
+            var canvas = document.createElement('canvas');
+            canvas.width  = vp.width;
+            canvas.height = vp.height;
+            container.appendChild(canvas);
+            return page.render({{canvasContext: canvas.getContext('2d'), viewport: vp}}).promise;
+          }});
+        }});
+      }})(p);
+    }}
+  }}).catch(function(err) {{
+    document.getElementById('loading').textContent = '❌ Could not render PDF: ' + err.message;
+  }});
 </script>
 </body>
-</html>
-"""
-            components.html(pdf_html, height=760, scrolling=False)
+</html>"""
+            components.html(pdf_html, height=800, scrolling=True)
             
         except Exception as e:
             st.error(f"Error loading PDF: {e}")
