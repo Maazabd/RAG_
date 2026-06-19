@@ -10,3 +10,4 @@ requests>=2.30.0
 pydantic>=2.0.0
 gdown>=5.1.0
 supabase>=2.3.0
+fpdf2>=2.7.0

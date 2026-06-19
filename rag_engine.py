@@ -607,6 +607,38 @@ class RAGEngine:
 
     # ──────────────────────────────────────────────────────────────
 
+    def generate_title(self, user_message: str, assistant_reply: str) -> str:
+        """Generate a short 4-5 word title for the conversation based on the first exchange."""
+        if not self.groq_client:
+            return user_message[:30] + "..."
+
+        system_prompt = (
+            "You are a helpful assistant. Generate a very short, concise, and smart "
+            "title (4-5 words max) for the given conversation exchange. "
+            "Do not use quotes or punctuation in the title. Just return the title text."
+        )
+        prompt = f"User: {user_message}\nAssistant: {assistant_reply}\nTitle:"
+
+        try:
+            resp = self.groq_client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
+                model=GROQ_MODEL,
+                temperature=0.3,
+                max_tokens=20,
+            )
+            title = resp.choices[0].message.content.strip()
+            # Remove any wrapping quotes if the model added them
+            title = title.strip('"\'')
+            return title
+        except Exception as e:
+            print(f"Title generation error: {e}")
+            return user_message[:30] + "..."
+
+    # ──────────────────────────────────────────────────────────────
+
     def smart_query(self, message: str, chat_history: list | None = None) -> dict:
         """Unified entry point with conversation context support.
 

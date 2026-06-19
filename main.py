@@ -3,9 +3,11 @@ import streamlit as st
 import streamlit.components.v1 as components
 import base64
 import re
+import io
 from datetime import datetime, date, timedelta
 from rag_engine import RAGEngine
 import conversation_manager as cm
+from fpdf import FPDF
 
 # ──────────────────────────────────────────────
 # Constants
@@ -263,6 +265,25 @@ section[data-testid="stSidebar"] > div div.stButton > button[kind="primary"] {
     transform: translateY(-1px) !important;
 }
 
+/* ── Feedback & Action Buttons ── */
+.action-btn-row {
+    display: flex; gap: 8px; margin-top: 8px;
+}
+.action-btn-row div.stButton > button {
+    background: transparent !important;
+    border: none !important;
+    padding: 2px 6px !important;
+    font-size: 0.9rem !important;
+    box-shadow: none !important;
+    color: #94a3b8 !important;
+    min-height: 0 !important;
+    line-height: 1 !important;
+}
+.action-btn-row div.stButton > button:hover {
+    background: rgba(0,0,0,0.05) !important;
+    transform: none !important;
+}
+
 /* ── Source badges ── */
 .src-badge {
     display:inline-block;background:rgba(79,70,229,0.1);
@@ -387,6 +408,62 @@ def _start_new_chat():
     st.session_state.current_conv = None
     st.session_state.view_pdf = None
 
+def _handle_suggested_question(q: str):
+    new_conv = cm.new_conversation()
+    new_conv["title"] = q[:50]
+    new_conv["messages"].append({
+        "role": "user", "content": q,
+        "timestamp": datetime.now().isoformat()
+    })
+    st.session_state.current_conv = new_conv
+    st.session_state.pending_query = q
+
+
+def _export_txt(msgs: list) -> str:
+    lines = []
+    for m in msgs:
+        role = "User" if m["role"] == "user" else "DocuSense"
+        lines.append(f"{role}:\n{m['content']}\n")
+        if role == "DocuSense" and m.get("citations"):
+            lines.append("Sources:")
+            for c in m["citations"]:
+                lines.append(f"  - {c.get('source', '')} (Page {c.get('page', '')})")
+            lines.append("")
+        lines.append("-" * 40 + "\n")
+    return "\n".join(lines)
+
+
+def _export_pdf(msgs: list, title: str) -> bytes:
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.add_font("DejaVu", "", "C:\\Windows\\Fonts\\arial.ttf", uni=True)
+    pdf.set_font("DejaVu", size=12)
+    
+    pdf.set_font("DejaVu", style="B", size=16)
+    pdf.cell(200, 10, txt=title, ln=True, align="C")
+    pdf.set_font("DejaVu", size=12)
+    pdf.ln(10)
+    
+    for m in msgs:
+        role = "User" if m["role"] == "user" else "DocuSense"
+        pdf.set_font("DejaVu", style="B", size=12)
+        pdf.multi_cell(0, 10, txt=f"{role}:")
+        pdf.set_font("DejaVu", size=11)
+        # remove emojis which FPDF might struggle with
+        content = m['content']
+        pdf.multi_cell(0, 8, txt=content)
+        if role == "DocuSense" and m.get("citations"):
+            pdf.ln(2)
+            pdf.set_font("DejaVu", style="I", size=10)
+            pdf.multi_cell(0, 6, txt="Sources:")
+            for c in m["citations"]:
+                pdf.multi_cell(0, 6, txt=f"  - {c.get('source', '')} (Page {c.get('page', '')})")
+        pdf.ln(5)
+        pdf.set_font("DejaVu", size=10)
+        pdf.cell(0, 0, txt="-" * 60, ln=True)
+        pdf.ln(5)
+    
+    return pdf.output(dest="S").encode("latin1", "replace")  # output to string and encode
 
 def _open_conv(conv_id: str):
     conv = cm.load(conv_id)
@@ -457,8 +534,28 @@ with st.sidebar:
 
     st.write("")
 
+    # ── Export Chat ──
+    if st.session_state.current_conv and st.session_state.current_conv.get("messages"):
+        with st.expander("📥 Export Current Chat"):
+            msgs = st.session_state.current_conv["messages"]
+            title = st.session_state.current_conv.get("title", "Conversation")
+            
+            txt_data = _export_txt(msgs)
+            st.download_button("Export as TXT", data=txt_data, file_name=f"{title}.txt", mime="text/plain", use_container_width=True)
+            
+            try:
+                pdf_data = _export_pdf(msgs, title)
+                st.download_button("Export as PDF", data=pdf_data, file_name=f"{title}.pdf", mime="application/pdf", use_container_width=True)
+            except Exception as e:
+                st.error(f"PDF export error: {e}")
+
     # ── Conversation history ──
+    search_query = st.text_input("🔍 Search chats...", key="chat_search", label_visibility="collapsed", placeholder="🔍 Search chats...")
+    
     all_convs = cm.load_all()
+    if search_query:
+        all_convs = [c for c in all_convs if search_query.lower() in c.get("title", "").lower()]
+
     active_id = (st.session_state.current_conv or {}).get("id")
 
     if all_convs:
@@ -706,20 +803,18 @@ else:
                 cols = st.columns(2)
                 for i, q in enumerate(sq):
                     with cols[i % 2]:
-                        if st.button(q, key=f"sq_{i}", use_container_width=True, type="secondary"):
-                            new_conv = cm.new_conversation()
-                            new_conv["title"] = q[:50]
-                            new_conv["messages"].append({
-                                "role": "user", "content": q,
-                                "timestamp": datetime.now().isoformat()
-                            })
-                            st.session_state.current_conv = new_conv
-                            st.session_state.pending_query = q
-                            st.rerun()
+                        st.button(
+                            q, 
+                            key=f"sq_{i}", 
+                            use_container_width=True, 
+                            type="secondary",
+                            on_click=_handle_suggested_question,
+                            args=(q,)
+                        )
 
     # ── Render existing conversation messages ──
     elif msgs:
-        for msg in msgs:
+        for idx, msg in enumerate(msgs):
             role   = msg["role"]
             avatar = "👤" if role == "user" else "🤖"
             with st.chat_message(role, avatar=avatar):
@@ -729,6 +824,25 @@ else:
                         msg.get("citations", []),
                         msg.get("sources", [])
                     )
+                    
+                    st.markdown("<div class='action-btn-row'>", unsafe_allow_html=True)
+                    c1, c2, c3, _ = st.columns([1, 1, 1, 10])
+                    with c1:
+                        if st.button("📋", key=f"copy_{idx}", help="Copy to clipboard"):
+                            st.toast("Answer ready to copy! (Highlight text and use Ctrl+C)", icon="📋")
+                    with c2:
+                        up_color = "🟢" if msg.get("feedback") == "up" else "👍"
+                        if st.button(up_color, key=f"up_{idx}", help="Good response"):
+                            msg["feedback"] = "up"
+                            cm.save(st.session_state.current_conv)
+                            st.rerun()
+                    with c3:
+                        down_color = "🔴" if msg.get("feedback") == "down" else "👎"
+                        if st.button(down_color, key=f"down_{idx}", help="Bad response"):
+                            msg["feedback"] = "down"
+                            cm.save(st.session_state.current_conv)
+                            st.rerun()
+                    st.markdown("</div>", unsafe_allow_html=True)
 
     # ── Process pending RAG query (runs after messages are shown) ──
     if st.session_state.pending_query:
@@ -758,6 +872,12 @@ else:
                 "sources": sources,
                 "timestamp": datetime.now().isoformat()
             })
+            
+            # Smart Title Generation on first exchange
+            if len(st.session_state.current_conv["messages"]) == 2:
+                new_title = rag.generate_title(query, answer)
+                st.session_state.current_conv["title"] = new_title
+                
             cm.save(st.session_state.current_conv)
         st.rerun()
 
