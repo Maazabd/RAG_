@@ -396,20 +396,36 @@ with st.sidebar:
                 continue
             st.markdown(f"<div class='grp-label'>{grp_name}</div>", unsafe_allow_html=True)
             for conv in grp_convs:
-                is_active = conv["id"] == active_id
-                label = conv.get("title", "New Chat")
-                # Truncate for sidebar
-                label_display = label if len(label) <= 36 else label[:34] + "…"
-                btn_type = "primary" if is_active else "secondary"
-                icon = "● " if is_active else "  "
-                if st.button(
-                    f"{icon}{label_display}",
-                    key=f"conv_btn_{conv['id']}",
-                    use_container_width=True,
-                    type=btn_type
-                ):
-                    _open_conv(conv["id"])
-                    st.rerun()
+                    is_active = conv["id"] == active_id
+                    label = conv.get("title", "New Chat")
+                    label_display = label if len(label) <= 34 else label[:32] + "…"
+                    btn_type = "primary" if is_active else "secondary"
+                    icon = "● " if is_active else "  "
+
+                    c_title, c_del = st.columns([6, 1], gap="small")
+                    with c_title:
+                        if st.button(
+                            f"{icon}{label_display}",
+                            key=f"conv_btn_{conv['id']}",
+                            use_container_width=True,
+                            type=btn_type
+                        ):
+                            _open_conv(conv["id"])
+                            st.rerun()
+                    with c_del:
+                        if st.button(
+                            "🗑",
+                            key=f"del_conv_{conv['id']}",
+                            help="Delete this conversation",
+                            use_container_width=True,
+                            type="secondary"
+                        ):
+                            cm.delete(conv["id"])
+                            # If we just deleted the active conversation, go to welcome screen
+                            if st.session_state.current_conv and \
+                               st.session_state.current_conv.get("id") == conv["id"]:
+                                st.session_state.current_conv = None
+                            st.rerun()
     else:
         st.caption("No conversations yet. Start typing below!")
 
