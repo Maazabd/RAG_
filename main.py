@@ -4,6 +4,10 @@ import base64
 import re
 from rag_engine import RAGEngine
 
+# Document directory path
+DOCS_DIR = os.path.join(os.getcwd(), "docs")
+
+
 # Set Page Config
 st.set_page_config(
     page_title="Document Intelligence RAG",
@@ -496,7 +500,7 @@ if st.session_state.pending_delete_doc:
         c1, c2 = st.columns(2)
         with c1:
             if st.button("Delete Permanently", use_container_width=True, type="primary", key="confirm_delete_btn"):
-                delete_path = os.path.join(os.getcwd(), target)
+                delete_path = os.path.join(DOCS_DIR, target)
                 if not os.path.exists(delete_path):
                     st.session_state.sidebar_feedback = {"kind": "warning", "msg": "Selected file was not found on disk."}
                 else:
@@ -510,12 +514,12 @@ if st.session_state.pending_delete_doc:
 
                         with st.spinner("Updating index after file deletion..."):
                             remaining_pdfs = [
-                                f for f in os.listdir(os.getcwd())
-                                if f.lower().endswith(".pdf") and os.path.isfile(os.path.join(os.getcwd(), f))
+                                f for f in os.listdir(DOCS_DIR)
+                                if f.lower().endswith(".pdf") and os.path.isfile(os.path.join(DOCS_DIR, f))
                             ]
 
                             if remaining_pdfs:
-                                res = rag.ingest_documents(os.getcwd())
+                                res = rag.ingest_documents(DOCS_DIR)
                                 if res["status"] == "success":
                                     st.session_state.sidebar_feedback = {"kind": "success", "msg": f"Deleted '{target}' and refreshed index."}
                                 else:
@@ -531,7 +535,7 @@ if st.session_state.pending_delete_doc:
                                     embedding_function=rag.embedding_function
                                 )
 
-                                suggested_path = os.path.join(os.getcwd(), "suggested_questions.json")
+                                suggested_path = os.path.join(DOCS_DIR, "suggested_questions.json")
                                 if os.path.exists(suggested_path):
                                     try:
                                         os.remove(suggested_path)
@@ -588,7 +592,7 @@ if selected_doc != DOC_DEFAULT_OPTION:
 # Check if document view mode is selected from dropdown list
 if selected_doc != DOC_DEFAULT_OPTION:
     # Dedicated screen for PDF Viewer
-    pdf_path = os.path.join(os.getcwd(), selected_doc)
+    pdf_path = os.path.join(DOCS_DIR, selected_doc)
     if os.path.exists(pdf_path):
         try:
             if st.session_state.active_pdf_doc != selected_doc:
@@ -689,7 +693,7 @@ else:
         with col2:
             if st.button("🚀 Ingest & Index PDFs Now", use_container_width=True, type="primary"):
                 with st.spinner("Processing documents (generating embeddings)..."):
-                    res = rag.ingest_documents(os.getcwd())
+                    res = rag.ingest_documents(DOCS_DIR)
                     if res["status"] == "success":
                         st.success(res["message"])
                         st.rerun()
@@ -701,13 +705,13 @@ else:
         
         # Initialize suggested questions on first load
         if not st.session_state.cached_suggested_questions:
-            st.session_state.cached_suggested_questions = rag.get_suggested_questions(os.getcwd())
+            st.session_state.cached_suggested_questions = rag.get_suggested_questions(DOCS_DIR)
             st.session_state.last_ingested_files_count = len(ingested_files)
         
         # Regenerate questions if document count changes
         current_files_count = len(ingested_files)
         if current_files_count != st.session_state.last_ingested_files_count:
-            st.session_state.cached_suggested_questions = rag.get_suggested_questions(os.getcwd())
+            st.session_state.cached_suggested_questions = rag.get_suggested_questions(DOCS_DIR)
             st.session_state.last_ingested_files_count = current_files_count
 
         auto_trigger = False
