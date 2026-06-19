@@ -453,13 +453,17 @@ if st.session_state.rag is None:
     with st.spinner("Initializing Chroma DB & Embedding Models..."):
         st.session_state.rag = RAGEngine()
 
-# Auto-ingest after a fresh Drive download (ChromaDB will be empty but docs/ now has PDFs)
-if st.session_state.rag is not None:
-    ingested_count = len(st.session_state.rag.get_ingested_files())
+# Auto-ingest after a fresh Drive download — guarded so it only runs once per session,
+# not on every Streamlit rerun (which would hammer ChromaDB with repeated queries).
+if "auto_ingest_done" not in st.session_state:
+    st.session_state.auto_ingest_done = False
+
+if st.session_state.rag is not None and not st.session_state.auto_ingest_done:
     pdf_count = len([f for f in os.listdir(DOCS_DIR) if f.lower().endswith(".pdf")]) if os.path.isdir(DOCS_DIR) else 0
-    if pdf_count > 0 and ingested_count == 0:
+    if pdf_count > 0 and st.session_state.rag.collection.count() == 0:
         with st.spinner("⚙️ Indexing downloaded documents into ChromaDB..."):
             st.session_state.rag.ingest_documents(DOCS_DIR)
+    st.session_state.auto_ingest_done = True
 
 
 rag = st.session_state.rag
