@@ -1,4 +1,5 @@
 import os
+import json
 import streamlit as st
 import streamlit.components.v1 as components
 import base64
@@ -52,6 +53,8 @@ _defaults = {
     "cached_suggested_questions": [],
     "last_ingested_count": 0,
     "pending_query": None,      # queued RAG call — set before rerun to avoid welcome flash
+    "sidebar_search": "",       # search filter for conversation history
+    "msg_feedback": {},         # {conv_id_msgidx: "up"|"down"}
 }
 for k, v in _defaults.items():
     if k not in st.session_state:
@@ -457,8 +460,24 @@ with st.sidebar:
 
     st.write("")
 
+    # ── Sidebar search bar ──
+    search_q = st.text_input(
+        "", placeholder="🔍 Search conversations…",
+        key="sidebar_search_input",
+        label_visibility="collapsed"
+    )
+
     # ── Conversation history ──
     all_convs = cm.load_all()
+    # Filter by search query (title + message content)
+    if search_q.strip():
+        sq_lower = search_q.strip().lower()
+        all_convs = [
+            c for c in all_convs
+            if sq_lower in c.get("title", "").lower()
+            or any(sq_lower in m.get("content", "").lower()
+                   for m in c.get("messages", []))
+        ]
     active_id = (st.session_state.current_conv or {}).get("id")
 
     if all_convs:
@@ -468,36 +487,37 @@ with st.sidebar:
                 continue
             st.markdown(f"<div class='grp-label'>{grp_name}</div>", unsafe_allow_html=True)
             for conv in grp_convs:
-                    is_active = conv["id"] == active_id
-                    label = conv.get("title", "New Chat")
-                    label_display = label if len(label) <= 34 else label[:32] + "…"
-                    btn_type = "primary" if is_active else "secondary"
-                    icon = "● " if is_active else "  "
+                is_active = conv["id"] == active_id
+                label = conv.get("title", "New Chat")
+                label_display = label if len(label) <= 34 else label[:32] + "…"
+                btn_type = "primary" if is_active else "secondary"
+                icon = "● " if is_active else "  "
 
-                    c_title, c_del = st.columns([6, 1], gap="small")
-                    with c_title:
-                        if st.button(
-                            f"{icon}{label_display}",
-                            key=f"conv_btn_{conv['id']}",
-                            use_container_width=True,
-                            type=btn_type
-                        ):
-                            _open_conv(conv["id"])
-                            st.rerun()
-                    with c_del:
-                        if st.button(
-                            "🗑",
-                            key=f"del_conv_{conv['id']}",
-                            help="Delete this conversation",
-                            use_container_width=True,
-                            type="secondary"
-                        ):
-                            cm.delete(conv["id"])
-                            # If we just deleted the active conversation, go to welcome screen
-                            if st.session_state.current_conv and \
-                               st.session_state.current_conv.get("id") == conv["id"]:
-                                st.session_state.current_conv = None
-                            st.rerun()
+                c_title, c_del = st.columns([6, 1], gap="small")
+                with c_title:
+                    if st.button(
+                        f"{icon}{label_display}",
+                        key=f"conv_btn_{conv['id']}",
+                        use_container_width=True,
+                        type=btn_type
+                    ):
+                        _open_conv(conv["id"])
+                        st.rerun()
+                with c_del:
+                    if st.button(
+                        "🗑",
+                        key=f"del_conv_{conv['id']}",
+                        help="Delete this conversation",
+                        use_container_width=True,
+                        type="secondary"
+                    ):
+                        cm.delete(conv["id"])
+                        if st.session_state.current_conv and \
+                           st.session_state.current_conv.get("id") == conv["id"]:
+                            st.session_state.current_conv = None
+                        st.rerun()
+    elif search_q.strip():
+        st.caption("No conversations match your search.")
     else:
         st.caption("No conversations yet. Start typing below!")
 
@@ -672,7 +692,7 @@ else:
     conv = st.session_state.current_conv
     msgs = conv["messages"] if conv else []
 
-    # ── Declare chat_input FIRST so its value suppresses the welcome screen instantly ──
+    # ── Declare chat_input FIRST so its value is known before any rendering ──
     if ingested_files:
         user_input = st.chat_input(
             "Message DocuSense — ask a question or just say hi!",
@@ -681,45 +701,37 @@ else:
     else:
         user_input = None
 
-    # ── Welcome screen: only when no messages AND no active submission in progress ──
-    if not msgs and not user_input and not st.session_state.pending_query:
-        st.markdown("""
-        <div class="welcome-wrap">
-            <h1 class="welcome-title">DocuSense RAG</h1>
-            <p class="welcome-sub">Query your documents with AI-powered precision.</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-        if not ingested_files:
-            st.info(
-                "No documents indexed yet. Open **📄 Documents** in the sidebar "
-                "to index your PDFs."
-            )
-        else:
-            sq = st.session_state.cached_suggested_questions
-            if sq:
-                st.markdown(
-                    "<p style='text-align:center;color:#64748b;font-size:0.85rem;"
-                    "margin-bottom:12px;'>💡 <b>Try asking:</b></p>",
-                    unsafe_allow_html=True
+    # ── Download button (only when a conversation is active with messages) ──
+    if msgs and conv:
+        conv_id   = conv.get("id", "")
+        conv_title = conv.get("title", "Conversation")
+        lines = [f"DocuSense RAG — {conv_title}", "=" * 50, ""]
+        for m in msgs:
+            role_label = "👤 You" if m["role"] == "user" else "🤖 DocuSense"
+            lines.append(f"{role_label}:")
+            lines.append(m["content"])
+            if m["role"] == "assistant" and m.get("citations"):
+                srcs = ", ".join(
+                    f"{c.get('source','')} p.{c.get('page','')}"
+                    for c in m["citations"]
                 )
-                cols = st.columns(2)
-                for i, q in enumerate(sq):
-                    with cols[i % 2]:
-                        if st.button(q, key=f"sq_{i}", use_container_width=True, type="secondary"):
-                            new_conv = cm.new_conversation()
-                            new_conv["title"] = q[:50]
-                            new_conv["messages"].append({
-                                "role": "user", "content": q,
-                                "timestamp": datetime.now().isoformat()
-                            })
-                            st.session_state.current_conv = new_conv
-                            st.session_state.pending_query = q
-                            st.rerun()
+                lines.append(f"   Sources: {srcs}")
+            lines.append("")
+        txt_bytes = "\n".join(lines).encode("utf-8")
+        st.download_button(
+            label="⬇️ Download conversation (.txt)",
+            data=txt_bytes,
+            file_name=f"{conv_title[:40].replace(' ','_')}.txt",
+            mime="text/plain",
+            key="download_conv",
+        )
+
+    # ── Reserve welcome-screen slot (filled only when idle — prevents flicker) ──
+    welcome_slot = st.empty()
 
     # ── Render existing conversation messages ──
-    elif msgs:
-        for msg in msgs:
+    if msgs:
+        for idx, msg in enumerate(msgs):
             role   = msg["role"]
             avatar = "👤" if role == "user" else "🤖"
             with st.chat_message(role, avatar=avatar):
@@ -729,16 +741,65 @@ else:
                         msg.get("citations", []),
                         msg.get("sources", [])
                     )
+                    # ── Action row: copy + feedback ──
+                    fkey = f"{conv.get('id','')}_msg{idx}"
+
+                    # Copy button (JS clipboard)
+                    escaped = json.dumps(msg["content"])
+                    copy_html = f"""
+                    <script>
+                    function copyMsg_{idx}(){{
+                        navigator.clipboard.writeText({escaped})
+                        .then(()=>{{
+                            var b=document.getElementById('cpbtn_{idx}');
+                            b.textContent='✅ Copied!';
+                            setTimeout(()=>b.textContent='📋 Copy',2000);
+                        }});
+                    }}
+                    </script>
+                    <button id="cpbtn_{idx}" onclick="copyMsg_{idx}()" style="
+                        background:transparent;border:1px solid #e2e8f0;
+                        border-radius:6px;padding:2px 9px;cursor:pointer;
+                        font-size:0.72rem;color:#94a3b8;font-family:Inter,sans-serif;
+                        transition:all 0.15s;margin-right:4px;
+                    ">&#128203; Copy</button>"""
+
+                    # Feedback state
+                    current_fb = st.session_state.msg_feedback.get(fkey)
+                    up_style   = "background:#d1fae5;color:#059669;" if current_fb == "up"   else ""
+                    down_style = "background:#fee2e2;color:#dc2626;" if current_fb == "down" else ""
+                    btn_base   = "border:1px solid #e2e8f0;border-radius:6px;padding:2px 9px;"\
+                                 "cursor:pointer;font-size:0.72rem;font-family:Inter,sans-serif;"\
+                                 "transition:all 0.15s;margin-right:4px;"
+
+                    components.html(
+                        copy_html +
+                        f'<button onclick="" style="{btn_base}{up_style}"
+                          id="fb_up_{idx}">&#128077;</button>'
+                        f'<button onclick="" style="{btn_base}{down_style}"
+                          id="fb_dn_{idx}">&#128078;</button>',
+                        height=34
+                    )
+
+                    # Invisible Streamlit buttons for feedback (zero-height trick)
+                    fb_col1, fb_col2, _ = st.columns([1, 1, 20])
+                    with fb_col1:
+                        if st.button("👍", key=f"up_{fkey}", help="Helpful"):
+                            st.session_state.msg_feedback[fkey] = "up"
+                            st.rerun()
+                    with fb_col2:
+                        if st.button("👎", key=f"dn_{fkey}", help="Not helpful"):
+                            st.session_state.msg_feedback[fkey] = "down"
+                            st.rerun()
 
     # ── Process pending RAG query (runs after messages are shown) ──
     if st.session_state.pending_query:
         query = st.session_state.pending_query
         st.session_state.pending_query = None
 
-        # Build chat history = everything BEFORE the current user message
-        # (the current user msg is the last item in msgs)
-        conv_msgs = (st.session_state.current_conv or {}).get("messages", [])
+        conv_msgs    = (st.session_state.current_conv or {}).get("messages", [])
         chat_history = conv_msgs[:-1] if len(conv_msgs) > 1 else []
+        is_first_response = len(conv_msgs) == 1  # only user msg so far
 
         with st.chat_message("assistant", avatar="🤖"):
             with st.spinner("Thinking…"):
@@ -750,6 +811,7 @@ else:
             st.markdown(answer)
             if intent == "document_query" and "answer not in documents" not in answer.lower():
                 _render_citations(citations, sources)
+
         if st.session_state.current_conv:
             st.session_state.current_conv["messages"].append({
                 "role": "assistant",
@@ -758,6 +820,12 @@ else:
                 "sources": sources,
                 "timestamp": datetime.now().isoformat()
             })
+            # ── Smart title after the FIRST exchange ──
+            if is_first_response:
+                with st.spinner("Naming conversation…"):
+                    new_title = rag.generate_title(query, answer)
+                if new_title:
+                    st.session_state.current_conv["title"] = new_title
             cm.save(st.session_state.current_conv)
         st.rerun()
 
@@ -777,8 +845,45 @@ else:
             "timestamp": datetime.now().isoformat()
         })
         st.session_state.pending_query = user_input
-        cm.save(st.session_state.current_conv)   # save with just the user message
+        cm.save(st.session_state.current_conv)
         st.rerun()
+
+    # ── Fill welcome screen slot ONLY when truly idle (no msgs, no pending activity) ──
+    if not msgs and not user_input and not st.session_state.pending_query:
+        with welcome_slot.container():
+            st.markdown("""
+            <div class="welcome-wrap">
+                <h1 class="welcome-title">DocuSense RAG</h1>
+                <p class="welcome-sub">Query your documents with AI-powered precision.</p>
+            </div>
+            """, unsafe_allow_html=True)
+            if not ingested_files:
+                st.info(
+                    "No documents indexed yet. Open **📄 Documents** in the sidebar "
+                    "to index your PDFs."
+                )
+            else:
+                sq = st.session_state.cached_suggested_questions
+                if sq:
+                    st.markdown(
+                        "<p style='text-align:center;color:#64748b;font-size:0.85rem;"
+                        "margin-bottom:12px;'>💡 <b>Try asking:</b></p>",
+                        unsafe_allow_html=True
+                    )
+                    cols = st.columns(2)
+                    for i, q in enumerate(sq):
+                        with cols[i % 2]:
+                            if st.button(q, key=f"sq_{i}",
+                                         use_container_width=True, type="secondary"):
+                                new_conv = cm.new_conversation()
+                                new_conv["title"] = q[:50]
+                                new_conv["messages"].append({
+                                    "role": "user", "content": q,
+                                    "timestamp": datetime.now().isoformat()
+                                })
+                                st.session_state.current_conv = new_conv
+                                st.session_state.pending_query = q
+                                st.rerun()
 
     if not ingested_files:
         st.info(
