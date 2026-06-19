@@ -3,950 +3,696 @@ import streamlit as st
 import streamlit.components.v1 as components
 import base64
 import re
+from datetime import datetime, date, timedelta
 from rag_engine import RAGEngine
+import conversation_manager as cm
 
-# Document directory path
+# ──────────────────────────────────────────────
+# Constants
+# ──────────────────────────────────────────────
 DOCS_DIR = os.path.join(os.getcwd(), "docs")
-
-# Google Drive folder ID (from the shared link)
 GDRIVE_FOLDER_ID = "1ujWlVColjvQzo6sJx7sxvdktT_u39Be1"
 
 
 def _download_docs_from_drive():
-    """Download PDFs from Google Drive into docs/ when the folder has no PDFs.
-    This only runs on Streamlit Cloud (or any environment) where docs/ is empty."""
+    """Download PDFs from Google Drive into docs/ when the folder has no PDFs."""
     os.makedirs(DOCS_DIR, exist_ok=True)
     existing_pdfs = [f for f in os.listdir(DOCS_DIR) if f.lower().endswith(".pdf")]
     if existing_pdfs:
-        return  # Already populated, skip download
-
+        return
     try:
         import gdown
         url = f"https://drive.google.com/drive/folders/{GDRIVE_FOLDER_ID}"
-        gdown.download_folder(
-            url=url,
-            output=DOCS_DIR,
-            quiet=False,
-            use_cookies=False,
-        )
+        gdown.download_folder(url=url, output=DOCS_DIR, quiet=False, use_cookies=False)
     except Exception as e:
         st.warning(f"⚠️ Could not download documents from Google Drive: {e}")
 
 
-# Set Page Config
+# ──────────────────────────────────────────────
+# Page config
+# ──────────────────────────────────────────────
 st.set_page_config(
-    page_title="Document Intelligence RAG",
-    page_icon="📄",
+    page_title="DocuSense RAG",
+    page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Theme selection - Light mode only
-if "theme" not in st.session_state:
-    st.session_state.theme = "light"
+# ──────────────────────────────────────────────
+# Session state initialisation
+# ──────────────────────────────────────────────
+_defaults = {
+    "rag": None,
+    "drive_download_done": False,
+    "auto_ingest_done": False,
+    "current_conv": None,       # active conversation dict (None = welcome / new chat)
+    "view_pdf": None,           # filename string or None
+    "pdf_zoom": 100,
+    "pending_delete_doc": None,
+    "cached_suggested_questions": [],
+    "last_ingested_count": 0,
+}
+for k, v in _defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
-# Shared UI constants/state defaults
-DOC_DEFAULT_OPTION = "-- Select a Document to View --"
-
-# Initialize all session state variables at the top
-if "return_to_qa" not in st.session_state:
-    st.session_state.return_to_qa = False
-
-if "selected_doc_name" not in st.session_state:
-    st.session_state.selected_doc_name = DOC_DEFAULT_OPTION
-
-if "pending_delete_doc" not in st.session_state:
-    st.session_state.pending_delete_doc = None
-
-if "rag" not in st.session_state:
-    st.session_state.rag = None
-
-if "sidebar_feedback" not in st.session_state:
-    st.session_state.sidebar_feedback = None
-
-if "pdf_zoom" not in st.session_state:
-    st.session_state.pdf_zoom = 100
-
-if "active_pdf_doc" not in st.session_state:
-    st.session_state.active_pdf_doc = None
-
-if "cached_suggested_questions" not in st.session_state:
-    st.session_state.cached_suggested_questions = []
-
-if "selected_sample_query" not in st.session_state:
-    st.session_state.selected_sample_query = None
-
-if "last_ingested_files_count" not in st.session_state:
-    st.session_state.last_ingested_files_count = 0
-
-if "query_input" not in st.session_state:
-    st.session_state.query_input = ""
-
-if "run_query_now" not in st.session_state:
-    st.session_state.run_query_now = False
-
-# Handle return action before creating sidebar widgets so selectbox state can be safely reset
-if st.session_state.return_to_qa:
-    st.session_state.selected_doc_name = DOC_DEFAULT_OPTION
-    st.session_state.return_to_qa = False
-
-# Define theme variables - Light mode only
-BG_COLOR = "#f8fafc"
-TEXT_COLOR = "#0f172a"
-SUB_TEXT_COLOR = "#475569"
-CARD_BG = "rgba(255, 255, 255, 0.95)"
-CARD_BORDER = "rgba(0, 0, 0, 0.1)"
-CARD_SHADOW = "rgba(0, 0, 0, 0.06)"
-INPUT_BG = "#ffffff"
-INPUT_COLOR = "#0f172a"
-INPUT_BORDER = "rgba(0, 0, 0, 0.2)"
-SIDEBAR_BG = "#f1f5f9"
-SIDEBAR_BORDER = "rgba(0, 0, 0, 0.08)"
-HEADER_GRADIENT = "linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(241, 245, 249, 0.98) 100%)"
-BADGE_BG = "rgba(79, 70, 229, 0.1)"
-BADGE_BORDER = "rgba(79, 70, 229, 0.25)"
-BADGE_COLOR = "#4f46e5"
-BTN_BG = "#f1f5f9"
-BTN_TEXT = "#0f172a"
-BTN_BORDER = "#cbd5e1"
-
-# Apply theme CSS styles dynamically
-CUSTOM_CSS = f"""
+# ──────────────────────────────────────────────
+# Global CSS  (light theme + chat styling)
+# ──────────────────────────────────────────────
+st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Inter:wght@300;400;500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&family=Inter:wght@300;400;500;600;700&display=swap');
 
-    /* Font applications */
-    html, body, [class*="css"] {{
-        font-family: 'Inter', sans-serif;
-    }}
-    h1, h2, h3, h4, h5, h6 {{
-        font-family: 'Outfit', sans-serif;
-        color: {TEXT_COLOR} !important;
-    }}
+html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+h1,h2,h3,h4,h5,h6 { font-family: 'Outfit', sans-serif; color: #0f172a !important; }
 
-    /* Main Background & Text Color */
-    .stApp {{
-        background-color: {BG_COLOR};
-        color: {TEXT_COLOR};
-    }}
+/* ── Main area ── */
+.stApp { background-color: #f8fafc; }
+.main .block-container { padding-top: 1.5rem !important; max-width: 860px !important; margin: 0 auto; }
 
-    /* Title Styling with Custom Gradient */
-    .title-container {{
-        text-align: center;
-        padding: 2.5rem 1rem 1.5rem 1rem;
-        background: {HEADER_GRADIENT};
-        border-radius: 16px;
-        margin-bottom: 2rem;
-        border: 1px solid {CARD_BORDER};
-        box-shadow: 0 8px 32px 0 {CARD_SHADOW};
-    }}
-    .main-title {{
-        background: linear-gradient(90deg, #6366f1 0%, #a855f7 50%, #ec4899 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        font-size: 3.2rem;
-        font-weight: 800;
-        margin-bottom: 0.5rem;
-        letter-spacing: -0.025em;
-    }}
-    .sub-title {{
-        color: {SUB_TEXT_COLOR};
-        font-size: 1.15rem;
-        font-weight: 400;
-    }}
+/* ── Sidebar ── */
+section[data-testid="stSidebar"] {
+    background-color: #f1f5f9 !important;
+    border-right: 1px solid rgba(0,0,0,0.07);
+}
+section[data-testid="stSidebar"] > div { overflow-y: auto !important; }
 
-    /* High contrast text overrides */
-    div[data-testid="stMarkdownContainer"] p {{
-        color: {TEXT_COLOR} !important;
-        font-size: 1.02rem;
-        line-height: 1.6;
-    }}
-    div[data-testid="stMarkdownContainer"] li {{
-        color: {TEXT_COLOR} !important;
-    }}
+/* ── Chat messages ── */
+div[data-testid="stChatMessage"] {
+    padding: 4px 0 !important;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+}
 
-    /* Glassmorphism Cards */
-    .glass-card {{
-        background: {CARD_BG};
-        backdrop-filter: blur(12px);
-        -webkit-backdrop-filter: blur(12px);
-        border: 1px solid {CARD_BORDER};
-        border-radius: 16px;
-        padding: 24px;
-        margin-bottom: 20px;
-        box-shadow: 0 4px 20px 0 {CARD_SHADOW};
-        color: {TEXT_COLOR} !important;
-    }}
-    .answer-card {{
-        background: {CARD_BG};
-        border: 1px solid rgba(99, 102, 241, 0.35);
-        border-left: 5px solid #6366f1;
-        border-radius: 12px;
-        padding: 24px;
-        margin-bottom: 24px;
-        box-shadow: 0 10px 30px -10px rgba(99, 102, 241, 0.25);
-        color: {TEXT_COLOR} !important;
-    }}
-    .not-found-card {{
-        background: {CARD_BG};
-        border: 1px solid rgba(239, 68, 68, 0.35);
-        border-left: 5px solid #ef4444;
-        border-radius: 12px;
-        padding: 24px;
-        margin-bottom: 24px;
-        box-shadow: 0 10px 30px -10px rgba(239, 68, 68, 0.15);
-        color: {TEXT_COLOR} !important;
-    }}
+/* User bubble */
+div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarUser"]) {
+    flex-direction: row-reverse;
+}
+div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarUser"])
+  div[data-testid="stChatMessageContent"] {
+    background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%) !important;
+    color: #ffffff !important;
+    border-radius: 18px 4px 18px 18px !important;
+    padding: 12px 16px !important;
+    max-width: 82% !important;
+    margin-left: auto !important;
+    box-shadow: 0 4px 14px rgba(99,102,241,0.3) !important;
+}
+div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarUser"])
+  div[data-testid="stChatMessageContent"] p {
+    color: #ffffff !important;
+    margin: 0 !important;
+}
 
-    /* Source Badges */
-    .source-badge {{
-        display: inline-block;
-        background-color: {BADGE_BG};
-        border: 1px solid {BADGE_BORDER};
-        color: {BADGE_COLOR};
-        padding: 3px 10px;
-        border-radius: 20px;
-        font-size: 0.82rem;
-        font-weight: 600;
-        margin-right: 8px;
-        margin-bottom: 8px;
-    }}
-    .page-badge {{
-        display: inline-block;
-        background-color: rgba(236, 72, 153, 0.15);
-        border: 1px solid rgba(236, 72, 153, 0.35);
-        color: #ec4899;
-        padding: 3px 10px;
-        border-radius: 20px;
-        font-size: 0.82rem;
-        font-weight: 600;
-        margin-right: 8px;
-        margin-bottom: 8px;
-    }}
+/* Assistant bubble */
+div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarAssistant"])
+  div[data-testid="stChatMessageContent"] {
+    background: #ffffff !important;
+    border: 1px solid rgba(99,102,241,0.18) !important;
+    border-left: 3px solid #6366f1 !important;
+    border-radius: 4px 18px 18px 18px !important;
+    padding: 14px 18px !important;
+    max-width: 88% !important;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.06) !important;
+}
+div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarAssistant"])
+  div[data-testid="stChatMessageContent"] p {
+    color: #0f172a !important;
+}
 
-    /* Input Field Styling */
-    .stTextInput>div>div>input {{
-        background-color: {INPUT_BG} !important;
-        color: {INPUT_COLOR} !important;
-        border: 1px solid {INPUT_BORDER} !important;
-        border-radius: 10px !important;
-        font-size: 1.05rem !important;
-        padding: 12px 18px !important;
-        transition: all 0.3s ease;
-    }}
-    .stTextInput>div>div>input:focus {{
-        border-color: #6366f1 !important;
-        box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.25) !important;
-    }}
+/* ── Chat input ── */
+div[data-testid="stChatInput"] {
+    border-top: 1px solid rgba(0,0,0,0.08) !important;
+    background: #f8fafc !important;
+    padding: 10px 0 !important;
+}
+div[data-testid="stChatInput"] textarea {
+    border-radius: 24px !important;
+    border: 1.5px solid rgba(99,102,241,0.35) !important;
+    background: #ffffff !important;
+    font-size: 1rem !important;
+    padding: 12px 20px !important;
+}
+div[data-testid="stChatInput"] textarea:focus {
+    border-color: #6366f1 !important;
+    box-shadow: 0 0 0 3px rgba(99,102,241,0.15) !important;
+}
 
-    /* High-contrast explicit button styling */
-    div.stButton > button, div[data-testid="stFormSubmitButton"] > button {{
-        background-color: {BTN_BG} !important;
-        color: {BTN_TEXT} !important;
-        border: 1px solid {BTN_BORDER} !important;
-        border-radius: 8px !important;
-        padding: 8px 16px !important;
-        font-weight: 600 !important;
-        font-size: 0.95rem !important;
-        transition: all 0.25s ease !important;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;
-    }}
-    div.stButton > button:hover, div[data-testid="stFormSubmitButton"] > button:hover {{
-        background: linear-gradient(90deg, #6366f1 0%, #a855f7 100%) !important;
-        color: #ffffff !important;
-        border-color: transparent !important;
-        transform: translateY(-1px) !important;
-        box-shadow: 0 4px 12px rgba(99, 102, 241, 0.35) !important;
-    }}
+/* ── Buttons (general) ── */
+div.stButton > button {
+    border-radius: 8px !important;
+    font-weight: 600 !important;
+    font-size: 0.9rem !important;
+    transition: all 0.2s ease !important;
+}
+div.stButton > button[kind="primary"] {
+    background: linear-gradient(135deg,#6366f1,#a855f7) !important;
+    color: #fff !important;
+    border: none !important;
+    box-shadow: 0 2px 8px rgba(99,102,241,0.35) !important;
+}
+div.stButton > button[kind="primary"]:hover {
+    transform: translateY(-1px) !important;
+    box-shadow: 0 4px 16px rgba(99,102,241,0.45) !important;
+}
+div.stButton > button[kind="secondary"] {
+    background: #fff !important;
+    color: #334155 !important;
+    border: 1px solid #cbd5e1 !important;
+}
+div.stButton > button[kind="secondary"]:hover {
+    background: #f1f5f9 !important;
+    border-color: #6366f1 !important;
+    color: #6366f1 !important;
+}
 
-    /* Sidebar Styling */
-    section[data-testid="stSidebar"] {{
-        background-color: {SIDEBAR_BG} !important;
-        border-right: 1px solid {SIDEBAR_BORDER};
-    }}
-    section[data-testid="stSidebar"] > div {{
-        overflow-y: hidden !important;
-        height: 100vh !important;
-    }}
-    
-    /* Sidebar text color visibility */
-    section[data-testid="stSidebar"] .stMarkdown {{
-        color: {TEXT_COLOR} !important;
-    }}
+/* ── Sidebar conversation buttons ── */
+section[data-testid="stSidebar"] div.stButton > button[kind="secondary"] {
+    background: transparent !important;
+    border: none !important;
+    text-align: left !important;
+    justify-content: flex-start !important;
+    color: #334155 !important;
+    font-weight: 400 !important;
+    border-radius: 8px !important;
+    padding: 8px 10px !important;
+}
+section[data-testid="stSidebar"] div.stButton > button[kind="secondary"]:hover {
+    background: rgba(99,102,241,0.1) !important;
+    color: #4f46e5 !important;
+    border: none !important;
+}
+section[data-testid="stSidebar"] div.stButton > button[kind="primary"] {
+    text-align: left !important;
+    justify-content: flex-start !important;
+    font-weight: 600 !important;
+    border-radius: 8px !important;
+    padding: 8px 10px !important;
+}
 
-    /* Custom scrollbar */
-    ::-webkit-scrollbar {{
-        width: 8px;
-        height: 8px;
-    }}
-    ::-webkit-scrollbar-track {{
-        background: {BG_COLOR};
-    }}
-    ::-webkit-scrollbar-thumb {{
-        background: {INPUT_BG};
-        border-radius: 4px;
-    }}
-    ::-webkit-scrollbar-thumb:hover {{
-        background: #334155;
-    }}
+/* ── Source badges ── */
+.src-badge {
+    display:inline-block;background:rgba(79,70,229,0.1);
+    border:1px solid rgba(79,70,229,0.25);color:#4f46e5;
+    padding:3px 10px;border-radius:20px;font-size:0.8rem;font-weight:600;
+    margin-right:6px;margin-bottom:6px;
+}
+.pg-badge {
+    display:inline-block;background:rgba(236,72,153,0.12);
+    border:1px solid rgba(236,72,153,0.3);color:#ec4899;
+    padding:3px 10px;border-radius:20px;font-size:0.8rem;font-weight:600;
+    margin-right:6px;margin-bottom:6px;
+}
 
-    /* Highlight marking style */
-    mark {{
-        border-radius: 4px;
-        padding: 1px 4px;
-    }}
+/* ── PDF viewer ── */
+.viewer-header {
+    display:flex;justify-content:space-between;align-items:center;
+    background:#fff;border:1px solid rgba(0,0,0,0.1);border-radius:14px;
+    padding:12px 18px;margin-bottom:12px;
+    box-shadow:0 4px 12px rgba(0,0,0,0.05);
+}
+.viewer-chip {
+    background:rgba(34,197,94,0.14);border:1px solid rgba(34,197,94,0.35);
+    color:#22c55e;border-radius:999px;font-size:0.72rem;font-weight:700;padding:3px 12px;
+}
+.viewer-doc-name {font-size:1rem;font-weight:700;color:#0f172a;}
+.viewer-zoom-indicator {
+    color:#64748b;font-size:0.82rem;font-weight:700;
+    background:#f8fafc;border:1px solid rgba(0,0,0,0.1);border-radius:8px;padding:4px 12px;
+}
 
-    /* Modern PDF viewer layout */
-    .viewer-header {{
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 14px;
-        background: {CARD_BG};
-        backdrop-filter: blur(12px);
-        -webkit-backdrop-filter: blur(12px);
-        border: 1px solid {CARD_BORDER};
-        border-radius: 14px;
-        padding: 12px 18px;
-        margin-bottom: 12px;
-        box-shadow: 0 6px 22px -14px {CARD_SHADOW};
-    }}
-    .viewer-header-left {{
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        min-width: 0;
-    }}
-    .viewer-chip {{
-        flex: 0 0 auto;
-        background: rgba(34, 197, 94, 0.14);
-        border: 1px solid rgba(34, 197, 94, 0.35);
-        color: #22c55e;
-        border-radius: 999px;
-        font-size: 0.72rem;
-        font-weight: 700;
-        padding: 3px 12px;
-        letter-spacing: 0.04em;
-    }}
-    .viewer-doc-name {{
-        color: {TEXT_COLOR};
-        font-size: 1.02rem;
-        font-weight: 700;
-        margin: 0;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        min-width: 0;
-    }}
-    .viewer-zoom-indicator {{
-        flex: 0 0 auto;
-        color: {SUB_TEXT_COLOR};
-        font-size: 0.82rem;
-        font-weight: 700;
-        background: {INPUT_BG};
-        border: 1px solid {CARD_BORDER};
-        border-radius: 8px;
-        padding: 4px 12px;
-        font-variant-numeric: tabular-nums;
-    }}
-    .viewer-frame-wrap {{
-        background: {CARD_BG};
-        padding: 14px;
-        border-radius: 16px;
-        margin-top: 8px;
-        border: 1px solid {CARD_BORDER};
-        box-shadow: 0 12px 34px -20px {CARD_SHADOW};
-    }}
-    .viewer-frame-inner {{
-        border-radius: 12px;
-        overflow: hidden;
-        background: #ffffff;
-        box-shadow: 0 2px 10px -4px rgba(15, 23, 42, 0.35);
-    }}
-    .viewer-frame {{
-        display: block;
-        width: 100%;
-        height: 82vh;
-        min-height: 560px;
-        border: none;
-        background: #ffffff;
-    }}
+/* ── Date group labels ── */
+.grp-label {
+    font-size:0.72rem;color:#94a3b8;font-weight:700;
+    letter-spacing:0.06em;text-transform:uppercase;
+    padding:10px 10px 2px 10px;
+}
 
-    /* Sidebar document card and dialog accents */
-    .doc-card-hint {{
-        margin: 0 0 10px 0;
-        color: {SUB_TEXT_COLOR};
-        font-size: 0.78rem;
-        opacity: 0.9;
-    }}
-    .doc-row-card {{
-        margin-bottom: 8px;
-    }}
+/* ── Welcome screen ── */
+.welcome-wrap {text-align:center;padding:3rem 1rem 1.5rem 1rem;}
+.welcome-title {
+    background:linear-gradient(90deg,#6366f1,#a855f7,#ec4899);
+    -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+    font-size:2.8rem;font-weight:800;font-family:'Outfit',sans-serif;
+    margin-bottom:0.4rem;
+}
+.welcome-sub {color:#64748b;font-size:1.1rem;margin:0;}
 
-    /* Keep icon buttons compact so they stay visually inside row cards */
-    div.stButton > button[kind="tertiary"] {{
-        padding: 6px 10px !important;
-        min-height: 34px !important;
-    }}
-    .dialog-shell {{
-        background: {CARD_BG};
-        border: 1px solid {CARD_BORDER};
-        border-radius: 14px;
-        padding: 14px;
-        margin-bottom: 10px;
-    }}
-    .dialog-chip {{
-        display: inline-block;
-        padding: 2px 10px;
-        font-size: 0.72rem;
-        font-weight: 700;
-        border-radius: 999px;
-        background: rgba(239, 68, 68, 0.14);
-        border: 1px solid rgba(239, 68, 68, 0.35);
-        color: #ef4444;
-        margin-bottom: 8px;
-    }}
-    .dialog-title {{
-        margin: 0;
-        font-size: 1.03rem;
-        font-weight: 700;
-        color: {TEXT_COLOR};
-    }}
-    .dialog-sub {{
-        margin: 6px 0 0 0;
-        color: {SUB_TEXT_COLOR};
-        font-size: 0.86rem;
-        line-height: 1.45;
-    }}
-
-    @media (max-width: 768px) {{
-        .viewer-shell {{
-            padding: 12px;
-            border-radius: 14px;
-        }}
-        .viewer-name {{
-            font-size: 1.02rem;
-            line-height: 1.35;
-        }}
-        .viewer-frame {{
-            height: 72vh;
-            min-height: 420px;
-        }}
-    }}
+/* ── Scrollbar ── */
+::-webkit-scrollbar {width:6px;height:6px;}
+::-webkit-scrollbar-track {background:#f1f5f9;}
+::-webkit-scrollbar-thumb {background:#cbd5e1;border-radius:4px;}
+::-webkit-scrollbar-thumb:hover {background:#94a3b8;}
 </style>
-"""
-st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
-# Download docs from Google Drive if running on cloud and docs/ is empty
-if "drive_download_done" not in st.session_state:
-    st.session_state.drive_download_done = False
-
+# ──────────────────────────────────────────────
+# Startup: Drive download → RAGEngine → Auto-ingest
+# ──────────────────────────────────────────────
 if not st.session_state.drive_download_done:
-    existing_pdfs = [f for f in os.listdir(DOCS_DIR) if f.lower().endswith(".pdf")] if os.path.isdir(DOCS_DIR) else []
+    existing_pdfs = (
+        [f for f in os.listdir(DOCS_DIR) if f.lower().endswith(".pdf")]
+        if os.path.isdir(DOCS_DIR) else []
+    )
     if not existing_pdfs:
         with st.spinner("☁️ Downloading documents from Google Drive..."):
             _download_docs_from_drive()
     st.session_state.drive_download_done = True
 
-# Initialize RAGEngine if not already done
 if st.session_state.rag is None:
-    with st.spinner("Initializing Chroma DB & Embedding Models..."):
+    with st.spinner("⚙️ Initialising RAG engine..."):
         st.session_state.rag = RAGEngine()
 
-# Auto-ingest after a fresh Drive download — guarded so it only runs once per session,
-# not on every Streamlit rerun (which would hammer ChromaDB with repeated queries).
-if "auto_ingest_done" not in st.session_state:
-    st.session_state.auto_ingest_done = False
+rag: RAGEngine = st.session_state.rag
 
-if st.session_state.rag is not None and not st.session_state.auto_ingest_done:
-    pdf_count = len([f for f in os.listdir(DOCS_DIR) if f.lower().endswith(".pdf")]) if os.path.isdir(DOCS_DIR) else 0
-    if pdf_count > 0 and st.session_state.rag.collection.count() == 0:
-        with st.spinner("⚙️ Indexing downloaded documents into ChromaDB..."):
-            st.session_state.rag.ingest_documents(DOCS_DIR)
+if not st.session_state.auto_ingest_done:
+    pdf_count = (
+        len([f for f in os.listdir(DOCS_DIR) if f.lower().endswith(".pdf")])
+        if os.path.isdir(DOCS_DIR) else 0
+    )
+    if pdf_count > 0 and rag.collection.count() == 0:
+        with st.spinner("📚 Indexing documents into ChromaDB..."):
+            rag.ingest_documents(DOCS_DIR)
     st.session_state.auto_ingest_done = True
 
-
-rag = st.session_state.rag
-
-# Define callbacks at top level (must be outside conditionals)
-def _trigger_query_run():
-    st.session_state.run_query_now = True
-
-def _clear_query_text():
-    st.session_state.query_input = ""
-    st.session_state.run_query_now = False
-
-# Get ingested files list (used in both sidebar and main content)
 ingested_files = rag.get_ingested_files()
 
-# Keep selected document consistent with current index state
-if st.session_state.selected_doc_name not in ingested_files:
-    st.session_state.selected_doc_name = DOC_DEFAULT_OPTION
+# Refresh suggested questions when doc count changes
+if len(ingested_files) != st.session_state.last_ingested_count:
+    st.session_state.cached_suggested_questions = rag.get_suggested_questions(DOCS_DIR)
+    st.session_state.last_ingested_count = len(ingested_files)
+elif not st.session_state.cached_suggested_questions and ingested_files:
+    st.session_state.cached_suggested_questions = rag.get_suggested_questions(DOCS_DIR)
 
-selected_doc = st.session_state.selected_doc_name
+# ──────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────
+def _group_conversations(convs: list[dict]) -> dict[str, list]:
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+    week_ago  = today - timedelta(days=7)
+    groups: dict[str, list] = {
+        "Today": [], "Yesterday": [], "Previous 7 Days": [], "Older": []
+    }
+    for conv in convs:
+        try:
+            d = datetime.fromisoformat(conv["updated_at"]).date()
+        except Exception:
+            d = today
+        if d == today:
+            groups["Today"].append(conv)
+        elif d == yesterday:
+            groups["Yesterday"].append(conv)
+        elif d > week_ago:
+            groups["Previous 7 Days"].append(conv)
+        else:
+            groups["Older"].append(conv)
+    return groups
 
-# Sidebar Configuration
+
+def _start_new_chat():
+    st.session_state.current_conv = None
+    st.session_state.view_pdf = None
+
+
+def _open_conv(conv_id: str):
+    conv = cm.load(conv_id)
+    if conv:
+        st.session_state.current_conv = conv
+        st.session_state.view_pdf = None
+
+
+def _open_pdf(filename: str):
+    st.session_state.view_pdf = filename
+
+
+def _render_citations(citations: list, sources: list):
+    """Render source citations inside an expander."""
+    if not citations:
+        return
+    with st.expander(f"📄 {len(citations)} source(s)", expanded=False):
+        for cit in citations:
+            src   = cit.get("source", "")
+            page  = cit.get("page", "")
+            quote = cit.get("exact_quote", "")
+            st.markdown(
+                f'<span class="src-badge">📄 {src}</span>'
+                f'<span class="pg-badge">Page {page}</span>',
+                unsafe_allow_html=True
+            )
+            if quote:
+                # Highlight the exact quote in the source chunk
+                best_text = quote
+                for s in sources:
+                    if s.get("source", "").lower() == src.lower():
+                        chunk = s.get("text", "")
+                        if quote.lower() in chunk.lower():
+                            try:
+                                highlighted = re.compile(re.escape(quote), re.IGNORECASE).sub(
+                                    lambda m: f"**{m.group(0)}**", chunk
+                                )
+                                best_text = highlighted
+                            except Exception:
+                                best_text = chunk
+                        break
+                st.markdown(f"> {best_text}")
+                st.markdown("")
+
+
+# ──────────────────────────────────────────────
+# SIDEBAR
+# ──────────────────────────────────────────────
 with st.sidebar:
-    st.image("https://img.icons8.com/color/96/artificial-intelligence.png", width=60)
-    st.markdown("<h2 style='margin-top: 0.5rem; margin-bottom: 0px;'>DocuSense RAG</h2>", unsafe_allow_html=True)
-    st.markdown("<p style='color: #64748b; font-size: 0.85rem; margin-bottom: 1rem;'>ChromaDB + Groq Assistant</p>", unsafe_allow_html=True)
-    
-    st.write("---")
-
-    # Document list - clickable to open
-    st.markdown("### 📄 Documents")
-
-    if ingested_files:
-        for idx, file_name in enumerate(ingested_files):
-            is_active = file_name == selected_doc
-            file_label = f"● {file_name}" if is_active else f"  {file_name}"
-            if st.button(file_label, key=f"sidebar_doc_{idx}", use_container_width=True):
-                st.session_state.selected_doc_name = file_name
-                st.rerun()
-    else:
-        st.caption("No documents indexed yet")
-    
-    st.write("---")
-    
-    # Document management section
-    st.markdown("### 🛠️ Document Management")
-    
-    if ingested_files:
-        for idx, file_name in enumerate(ingested_files):
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                st.caption(f"📄 {file_name}")
-            with col2:
-                if st.button("🗑", key=f"delete_icon_{idx}", help=f"Delete {file_name}"):
-                    st.session_state.pending_delete_doc = file_name
-                    st.rerun()
-
-    st.write("---")
-    st.markdown(
-        "<div style='color: #64748b; font-size: 0.8rem; text-align: center;'>"
-        "Powered by ChromaDB & Groq API"
-        "</div>",
-        unsafe_allow_html=True
-    )
-
-# Confirmation popup for deleting a document
-if st.session_state.pending_delete_doc:
-    @st.dialog("Delete Document?")
-    def confirm_delete_dialog():
-        target = st.session_state.pending_delete_doc
+    # Branding
+    col_ic, col_tx = st.columns([1, 3])
+    with col_ic:
+        st.image("https://img.icons8.com/color/96/artificial-intelligence.png", width=42)
+    with col_tx:
         st.markdown(
-            f"""
-            <div class="dialog-shell">
-                <span class="dialog-chip">DELETE CONFIRMATION</span>
-                <p class="dialog-title">Remove <strong>{target}</strong> from workspace?</p>
-                <p class="dialog-sub">This action deletes the file and refreshes the document index.</p>
-            </div>
-            """,
+            "<h2 style='margin:0;padding-top:6px;font-size:1.1rem;color:#0f172a;'>"
+            "DocuSense RAG</h2>"
+            "<p style='margin:0;font-size:0.78rem;color:#64748b;'>ChromaDB · Groq</p>",
             unsafe_allow_html=True
         )
 
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("Delete Permanently", use_container_width=True, type="primary", key="confirm_delete_btn"):
-                delete_path = os.path.join(DOCS_DIR, target)
-                if not os.path.exists(delete_path):
-                    st.session_state.sidebar_feedback = {"kind": "warning", "msg": "Selected file was not found on disk."}
-                else:
-                    try:
-                        os.remove(delete_path)
-                    except Exception as e:
-                        st.session_state.sidebar_feedback = {"kind": "error", "msg": f"Could not delete '{target}': {e}"}
-                    else:
-                        if st.session_state.selected_doc_name == target:
-                            st.session_state.return_to_qa = True
+    st.write("")
 
-                        with st.spinner("Updating index after file deletion..."):
-                            remaining_pdfs = [
-                                f for f in os.listdir(DOCS_DIR)
-                                if f.lower().endswith(".pdf") and os.path.isfile(os.path.join(DOCS_DIR, f))
-                            ]
+    # New Chat
+    if st.button("✏️  New Chat", key="new_chat_btn", use_container_width=True, type="primary"):
+        _start_new_chat()
+        st.rerun()
 
-                            if remaining_pdfs:
-                                res = rag.ingest_documents(DOCS_DIR)
-                                if res["status"] == "success":
-                                    st.session_state.sidebar_feedback = {"kind": "success", "msg": f"Deleted '{target}' and refreshed index."}
-                                else:
-                                    st.session_state.sidebar_feedback = {"kind": "error", "msg": res["message"]}
-                            else:
-                                try:
-                                    rag.chroma_client.delete_collection("pdf_documents")
-                                except Exception:
-                                    pass
+    st.write("")
 
-                                rag.collection = rag.chroma_client.get_or_create_collection(
-                                    name="pdf_documents",
-                                    embedding_function=rag.embedding_function
-                                )
+    # ── Conversation history ──
+    all_convs = cm.load_all()
+    active_id = (st.session_state.current_conv or {}).get("id")
 
-                                suggested_path = os.path.join(DOCS_DIR, "suggested_questions.json")
-                                if os.path.exists(suggested_path):
-                                    try:
-                                        os.remove(suggested_path)
-                                    except Exception:
-                                        pass
+    if all_convs:
+        groups = _group_conversations(all_convs)
+        for grp_name, grp_convs in groups.items():
+            if not grp_convs:
+                continue
+            st.markdown(f"<div class='grp-label'>{grp_name}</div>", unsafe_allow_html=True)
+            for conv in grp_convs:
+                is_active = conv["id"] == active_id
+                label = conv.get("title", "New Chat")
+                # Truncate for sidebar
+                label_display = label if len(label) <= 36 else label[:34] + "…"
+                btn_type = "primary" if is_active else "secondary"
+                icon = "● " if is_active else "  "
+                if st.button(
+                    f"{icon}{label_display}",
+                    key=f"conv_btn_{conv['id']}",
+                    use_container_width=True,
+                    type=btn_type
+                ):
+                    _open_conv(conv["id"])
+                    st.rerun()
+    else:
+        st.caption("No conversations yet. Start typing below!")
 
-                                st.session_state.sidebar_feedback = {"kind": "success", "msg": f"Deleted '{target}'. No PDFs remain in workspace."}
+    st.divider()
 
-                st.session_state.pending_delete_doc = None
+    # ── Documents ──
+    doc_label = f"📄 Documents ({len(ingested_files)})"
+    with st.expander(doc_label, expanded=False):
+        if ingested_files:
+            for idx, fname in enumerate(ingested_files):
+                c1, c2 = st.columns([5, 1])
+                with c1:
+                    if st.button(
+                        f"📄 {fname}", key=f"view_pdf_{idx}",
+                        use_container_width=True, type="secondary"
+                    ):
+                        _open_pdf(fname)
+                        st.rerun()
+                with c2:
+                    if st.button("🗑", key=f"del_doc_{idx}", help=f"Delete {fname}"):
+                        st.session_state.pending_delete_doc = fname
+                        st.rerun()
+        else:
+            st.caption("No documents indexed yet.")
+            if st.button("🚀 Index PDFs", key="sidebar_ingest_btn",
+                         use_container_width=True, type="primary"):
+                with st.spinner("Indexing..."):
+                    rag.ingest_documents(DOCS_DIR)
+                st.session_state.auto_ingest_done = True
                 st.rerun()
-        with c2:
-            if st.button("Keep File", use_container_width=True, key="cancel_delete_btn"):
-                st.session_state.pending_delete_doc = None
-                st.rerun()
 
-    confirm_delete_dialog()
-
-# Focus mode CSS when viewing a document
-if selected_doc != DOC_DEFAULT_OPTION:
     st.markdown(
-        """
-        <style>
-            html, body, [data-testid="stAppViewContainer"], .stApp, .main {
-                height: 100vh !important;
-                overflow: hidden !important;
-            }
-            section[data-testid="stSidebar"] { display: none !important; }
-            div[data-testid="stSidebarCollapsedControl"] { display: none !important; }
-            .main .block-container {
-                max-width: 100% !important;
-                height: 100vh !important;
-                padding-top: 0 !important;
-                padding-bottom: 0 !important;
-                padding-left: 0.75rem !important;
-                padding-right: 0.75rem !important;
-                overflow: hidden !important;
-            }
-            .viewer-frame-wrap {
-                margin-top: 0 !important;
-                height: calc(100vh - 128px) !important;
-            }
-            .viewer-frame-inner {
-                height: 100% !important;
-            }
-            .viewer-frame {
-                height: 100% !important;
-                min-height: 100% !important;
-            }
-        </style>
-        """,
+        "<div style='color:#94a3b8;font-size:0.72rem;text-align:center;padding-top:6px;'>"
+        "Powered by ChromaDB &amp; Groq API</div>",
         unsafe_allow_html=True
     )
 
-# Check if document view mode is selected from dropdown list
-if selected_doc != DOC_DEFAULT_OPTION:
-    # Dedicated screen for PDF Viewer
+# ──────────────────────────────────────────────
+# Delete-doc confirmation dialog
+# ──────────────────────────────────────────────
+if st.session_state.pending_delete_doc:
+    @st.dialog("Delete Document?")
+    def _confirm_delete():
+        target = st.session_state.pending_delete_doc
+        st.warning(
+            f"This will permanently remove **{target}** and rebuild the index."
+        )
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Delete", use_container_width=True,
+                         type="primary", key="confirm_del_btn"):
+                del_path = os.path.join(DOCS_DIR, target)
+                try:
+                    if os.path.exists(del_path):
+                        os.remove(del_path)
+                    remaining = [
+                        f for f in os.listdir(DOCS_DIR) if f.lower().endswith(".pdf")
+                    ]
+                    if remaining:
+                        rag.ingest_documents(DOCS_DIR)
+                    else:
+                        try:
+                            rag.chroma_client.delete_collection("pdf_documents")
+                        except Exception:
+                            pass
+                        rag.collection = rag.chroma_client.get_or_create_collection(
+                            name="pdf_documents",
+                            embedding_function=rag.embedding_function
+                        )
+                except Exception as e:
+                    st.error(str(e))
+                st.session_state.pending_delete_doc = None
+                st.session_state.auto_ingest_done = True
+                st.rerun()
+        with c2:
+            if st.button("Cancel", use_container_width=True, key="cancel_del_btn"):
+                st.session_state.pending_delete_doc = None
+                st.rerun()
+
+    _confirm_delete()
+
+# ══════════════════════════════════════════════
+#  MAIN CONTENT AREA
+# ══════════════════════════════════════════════
+
+# ── PDF Viewer ──────────────────────────────
+if st.session_state.view_pdf:
+    selected_doc = st.session_state.view_pdf
     pdf_path = os.path.join(DOCS_DIR, selected_doc)
+
     if os.path.exists(pdf_path):
         try:
-            if st.session_state.active_pdf_doc != selected_doc:
-                st.session_state.active_pdf_doc = selected_doc
-                st.session_state.pdf_zoom = 100
-
             with open(pdf_path, "rb") as f:
                 pdf_bytes = f.read()
-                base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
+            base64_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
 
             st.markdown(
                 f"""
                 <div class="viewer-header">
-                    <div class="viewer-header-left">
-                        <span class="viewer-chip">PDF</span>
-                        <span class="viewer-doc-name">{selected_doc}</span>
-                    </div>
-                    <span class="viewer-zoom-indicator">{st.session_state.pdf_zoom}%</span>
+                  <div style="display:flex;align-items:center;gap:12px;">
+                    <span class="viewer-chip">PDF</span>
+                    <span class="viewer-doc-name">{selected_doc}</span>
+                  </div>
+                  <span class="viewer-zoom-indicator">{st.session_state.pdf_zoom}%</span>
                 </div>
                 """,
                 unsafe_allow_html=True
             )
 
-            t1, t2, t3, t4, t5 = st.columns([2.1, 1, 1, 1, 2.1], gap="small")
+            t1, t2, t3, t4, t5 = st.columns([2.2, 1, 1, 1, 2.2], gap="small")
             with t1:
-                if st.button("⬅ Back", key="back_to_qa_btn", use_container_width=True):
-                    st.session_state.return_to_qa = True
+                if st.button("⬅ Back to Chat", key="back_btn", use_container_width=True):
+                    st.session_state.view_pdf = None
                     st.rerun()
             with t2:
-                if st.button("－ Zoom", key="zoom_out_btn", use_container_width=True, type="secondary"):
+                if st.button("－ Zoom", key="zoom_out", use_container_width=True, type="secondary"):
                     st.session_state.pdf_zoom = max(50, st.session_state.pdf_zoom - 25)
                     st.rerun()
             with t3:
-                if st.button("＋ Zoom", key="zoom_in_btn", use_container_width=True, type="secondary"):
+                if st.button("＋ Zoom", key="zoom_in", use_container_width=True, type="secondary"):
                     st.session_state.pdf_zoom = min(300, st.session_state.pdf_zoom + 25)
                     st.rerun()
             with t4:
-                if st.button("Reset", key="zoom_reset_btn", use_container_width=True, type="secondary"):
+                if st.button("Reset", key="zoom_reset", use_container_width=True, type="secondary"):
                     st.session_state.pdf_zoom = 100
                     st.rerun()
             with t5:
                 st.download_button(
-                    "⬇ Download",
-                    data=pdf_bytes,
-                    file_name=selected_doc,
-                    mime="application/pdf",
-                    use_container_width=True,
-                    key="download_open_pdf"
+                    "⬇ Download", data=pdf_bytes, file_name=selected_doc,
+                    mime="application/pdf", use_container_width=True, key="dl_pdf"
                 )
 
-            # Render PDF using PDF.js (canvas-based) — works in Edge, Chrome, Firefox
-            # because it draws to <canvas> elements, bypassing all iframe/data-URI restrictions.
-            zoom = st.session_state.pdf_zoom
+            zoom  = st.session_state.pdf_zoom
             scale = round(zoom / 100.0, 2)
             pdf_html = f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
+<html><head><meta charset="utf-8">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <style>
-  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  html, body {{ background: #e5e7eb; font-family: sans-serif; }}
-  #loading {{ text-align: center; padding: 32px; color: #6b7280; font-size: 13px; }}
-  #pdf-container {{ display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 12px; }}
-  canvas {{ background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.18); border-radius: 4px; display: block; }}
-</style>
-</head>
-<body>
-<div id="loading">⏳ Rendering PDF...</div>
-<div id="pdf-container"></div>
+  *{{box-sizing:border-box;margin:0;padding:0;}}
+  body{{background:#e5e7eb;}}
+  #lbl{{text-align:center;padding:32px;color:#6b7280;font:13px sans-serif;}}
+  #box{{display:flex;flex-direction:column;align-items:center;gap:10px;padding:12px;}}
+  canvas{{background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.18);border-radius:4px;display:block;}}
+</style></head><body>
+<div id="lbl">⏳ Rendering PDF...</div><div id="box"></div>
 <script>
-  pdfjsLib.GlobalWorkerOptions.workerSrc =
-    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-
-  var b64 = "{base64_pdf}";
-  var bin = atob(b64);
-  var buf = new Uint8Array(bin.length);
-  for (var i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
-
-  pdfjsLib.getDocument({{data: buf}}).promise.then(function(pdf) {{
-    document.getElementById('loading').style.display = 'none';
-    var container = document.getElementById('pdf-container');
-    var scale = {scale};
-    var chain = Promise.resolve();
-    for (var p = 1; p <= pdf.numPages; p++) {{
-      (function(pageNum) {{
-        chain = chain.then(function() {{
-          return pdf.getPage(pageNum).then(function(page) {{
-            var vp = page.getViewport({{scale: scale}});
-            var canvas = document.createElement('canvas');
-            canvas.width  = vp.width;
-            canvas.height = vp.height;
-            container.appendChild(canvas);
-            return page.render({{canvasContext: canvas.getContext('2d'), viewport: vp}}).promise;
-          }});
-        }});
-      }})(p);
-    }}
-  }}).catch(function(err) {{
-    document.getElementById('loading').textContent = '❌ Could not render PDF: ' + err.message;
-  }});
-</script>
-</body>
-</html>"""
+pdfjsLib.GlobalWorkerOptions.workerSrc=
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+var b64="{base64_pdf}",bin=atob(b64),buf=new Uint8Array(bin.length);
+for(var i=0;i<bin.length;i++)buf[i]=bin.charCodeAt(i);
+pdfjsLib.getDocument({{data:buf}}).promise.then(function(pdf){{
+  document.getElementById('lbl').style.display='none';
+  var box=document.getElementById('box'),sc={scale},chain=Promise.resolve();
+  for(var p=1;p<=pdf.numPages;p++){{
+    (function(n){{chain=chain.then(function(){{return pdf.getPage(n).then(function(pg){{
+      var vp=pg.getViewport({{scale:sc}}),c=document.createElement('canvas');
+      c.width=vp.width;c.height=vp.height;box.appendChild(c);
+      return pg.render({{canvasContext:c.getContext('2d'),viewport:vp}}).promise;
+    }})}})}})(p);
+  }}
+}}).catch(function(e){{document.getElementById('lbl').textContent='❌ '+e.message;}});
+</script></body></html>"""
             components.html(pdf_html, height=800, scrolling=True)
-            
+
         except Exception as e:
             st.error(f"Error loading PDF: {e}")
     else:
         st.error("Document file not found.")
 
-# If in Q&A Mode
+# ── Chat Mode ───────────────────────────────
 else:
-    # Main Application Dashboard
-    st.markdown(
-        """
-        <div class="title-container">
-            <h1 class="main-title">DocuSense RAG Engine</h1>
-            <p class="sub-title">Query your workspace PDF documents with precise, context-bounded AI answers.</p>
+    conv   = st.session_state.current_conv
+    msgs   = conv["messages"] if conv else []
+
+    # ── Welcome screen (no active conversation) ──
+    if not msgs:
+        st.markdown("""
+        <div class="welcome-wrap">
+            <h1 class="welcome-title">DocuSense RAG</h1>
+            <p class="welcome-sub">Query your documents with AI-powered precision.</p>
         </div>
-        """,
-        unsafe_allow_html=True
-    )
+        """, unsafe_allow_html=True)
 
-    # If no documents are indexed, prompt ingestion
-    if not ingested_files:
-        st.markdown(
-            """
-            <div class="glass-card" style="text-align: center; padding: 40px;">
-                <h3 style="color: #f59e0b; margin-bottom: 15px;">⚠️ Ingestion Required</h3>
-                <p style="color: #94a3b8; font-size: 1.05rem; margin-bottom: 25px;">
-                    ChromaDB is empty. We found PDF documents in your workspace directory. 
-                    Please click below to parse, chunk, embed, and index them.
-                </p>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-        
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            if st.button("🚀 Ingest & Index PDFs Now", use_container_width=True, type="primary"):
-                with st.spinner("Processing documents (generating embeddings)..."):
-                    res = rag.ingest_documents(DOCS_DIR)
-                    if res["status"] == "success":
-                        st.success(res["message"])
-                        st.rerun()
-                    else:
-                        st.error(res["message"])
+        if not ingested_files:
+            st.info(
+                "No documents indexed yet. Open **📄 Documents** in the sidebar "
+                "to index your PDFs."
+            )
+        else:
+            sq = st.session_state.cached_suggested_questions
+            if sq:
+                st.markdown(
+                    "<p style='text-align:center;color:#64748b;font-size:0.9rem;"
+                    "margin-bottom:14px;'>💡 <b>Try one of these to get started:</b></p>",
+                    unsafe_allow_html=True
+                )
+                cols = st.columns(2)
+                for i, q in enumerate(sq):
+                    with cols[i % 2]:
+                        if st.button(q, key=f"sq_{i}", use_container_width=True, type="secondary"):
+                            # Bootstrap a new conversation from the suggested question
+                            new_conv = cm.new_conversation()
+                            new_conv["title"] = q[:50]
+                            new_conv["messages"].append({
+                                "role": "user",
+                                "content": q,
+                                "timestamp": datetime.now().isoformat()
+                            })
+                            with st.spinner("Thinking…"):
+                                resp = rag.query(q)
+                            new_conv["messages"].append({
+                                "role": "assistant",
+                                "content": resp["answer"],
+                                "citations": resp.get("citations", []),
+                                "sources": resp.get("sources", []),
+                                "timestamp": datetime.now().isoformat()
+                            })
+                            cm.save(new_conv)
+                            st.session_state.current_conv = new_conv
+                            st.rerun()
+
+    # ── Render existing conversation messages ──
     else:
-        # Q&A Section
-        st.markdown("### 💬 Ask a Question")
-        
-        # Initialize suggested questions on first load
-        if not st.session_state.cached_suggested_questions:
-            st.session_state.cached_suggested_questions = rag.get_suggested_questions(DOCS_DIR)
-            st.session_state.last_ingested_files_count = len(ingested_files)
-        
-        # Regenerate questions if document count changes
-        current_files_count = len(ingested_files)
-        if current_files_count != st.session_state.last_ingested_files_count:
-            st.session_state.cached_suggested_questions = rag.get_suggested_questions(DOCS_DIR)
-            st.session_state.last_ingested_files_count = current_files_count
-
-        auto_trigger = False
-        if st.session_state.selected_sample_query:
-            st.session_state.query_input = st.session_state.selected_sample_query
-            auto_trigger = True
-            st.session_state.selected_sample_query = None # clear immediately
-
-        query_col, clear_col = st.columns([14, 1], gap="small")
-        with query_col:
-            st.text_input(
-                "Enter your question:",
-                key="query_input",
-                placeholder="Type your question and press Enter...",
-                label_visibility="collapsed",
-                on_change=_trigger_query_run
-            )
-        with clear_col:
-            st.button(
-                "✕",
-                key="clear_query_btn",
-                help="Clear query",
-                use_container_width=True,
-                type="secondary",
-                on_click=_clear_query_text
-            )
-
-        # Determine if we run the query
-        query_text = st.session_state.query_input.strip()
-        should_run = False
-        if auto_trigger and query_text:
-            should_run = True
-        elif st.session_state.run_query_now:
-            should_run = bool(query_text)
-            st.session_state.run_query_now = False
-
-        # 1. First display search results (ABOVE the suggested questions)
-        if should_run:
-            if not query_text.strip():
-                st.warning("Please enter a valid query.")
-            else:
-                with st.spinner("Retrieving document chunks and reasoning..."):
-                    response = rag.query(query_text)
-                    
-                answer = response["answer"]
-                citations = response.get("citations", [])
-                sources = response.get("sources", [])
-                
-                # Style answer card appropriately
-                if "answer not in documents" in answer.lower():
-                    st.markdown(
-                        f"""
-                        <div class="not-found-card">
-                            <h4 style="color: #ef4444; margin-top: 0; margin-bottom: 10px;">❌ Answer Not In Documents</h4>
-                            <p style="font-size: 1.1rem; line-height: 1.6; margin: 0; opacity: 0.95; font-weight: 500;">
-                                The information requested is not present in the indexed workspace documents.
-                            </p>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
+        for msg in msgs:
+            role = msg["role"]
+            avatar = "👤" if role == "user" else "🤖"
+            with st.chat_message(role, avatar=avatar):
+                st.markdown(msg["content"])
+                if role == "assistant":
+                    _render_citations(
+                        msg.get("citations", []),
+                        msg.get("sources", [])
                     )
-                else:
-                    st.markdown(
-                        f"""
-                        <div class="answer-card">
-                            <h4 style="color: #818cf8; margin-top: 0; margin-bottom: 12px; font-weight: 700;">💡 Answer</h4>
-                            <p style="font-size: 1.18rem; line-height: 1.6; margin: 0; color: {TEXT_COLOR}; font-weight: 500;">
-                                {answer}
-                            </p>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-                    
-                    # Highlight and display cited sources
-                    if citations:
-                        matched_sources = []
-                        for citation in citations:
-                            cite_source = citation.get("source", "")
-                            cite_quote = citation.get("exact_quote", "")
-                            
-                            best_chunk = None
-                            for src in sources:
-                                if src["source"].lower() == cite_source.lower():
-                                    if cite_quote and cite_quote.lower() in src["text"].lower():
-                                        best_chunk = src
-                                        break
-                                    if not best_chunk:
-                                        best_chunk = src
-                            
-                            if best_chunk:
-                                highlighted_text = best_chunk["text"]
-                                if cite_quote:
-                                    escaped_quote = re.escape(cite_quote)
-                                    try:
-                                        pattern = re.compile(escaped_quote, re.IGNORECASE)
-                                        highlight_text_color = "#1e293b"
-                                        highlighted_text = pattern.sub(
-                                            lambda m: f"<mark style='background-color: #fef08a; color: {highlight_text_color}; padding: 2px 5px; border-radius: 4px; font-weight: bold;'>{m.group(0)}</mark>", 
-                                            best_chunk["text"]
-                                        )
-                                    except Exception:
-                                        pass
-                                
-                                matched_sources.append({
-                                    "source": best_chunk["source"],
-                                    "page": best_chunk["page"],
-                                    "text": highlighted_text,
-                                    "quote": cite_quote
-                                })
-                        
-                        if matched_sources:
-                            with st.expander("📄 View Source References", expanded=False):
-                                for idx, ms in enumerate(matched_sources):
-                                    st.markdown(
-                                        f"""
-                                        <div class="glass-card" style="margin-bottom: 15px; padding: 18px; border-left: 4px solid #a855f7;">
-                                            <div style="margin-bottom: 10px;">
-                                                <span class="source-badge">📄 {ms['source']}</span>
-                                                <span class="page-badge">Page {ms['page']}</span>
-                                            </div>
-                                            <div style="font-size: 1.02rem; line-height: 1.55; color: {TEXT_COLOR}; font-style: italic;">
-                                                "{ms['text']}"
-                                            </div>
-                                        </div>
-                                        """,
-                                        unsafe_allow_html=True
-                                    )
-                        else:
-                            st.info("Citations were returned, but supporting blocks could not be matched.")
-                    else:
-                        st.info("No specific citations were returned for this answer.")
-            st.write("---")
 
-        # 2. Next display suggested questions (BELOW the answer and search results)
-        st.markdown("<p style='font-size: 0.88rem; margin-top: 15px; margin-bottom: 8px; opacity: 0.85; font-weight: 600;'>💡 Suggested Questions (Click to Ask):</p>", unsafe_allow_html=True)
-        
-        # Use cached suggested questions for stable button keys
-        sample_questions = st.session_state.cached_suggested_questions
-        
-        sq_cols = st.columns(2)
-        for idx, sq in enumerate(sample_questions):
-            col_idx = idx % 2
-            with sq_cols[col_idx]:
-                if st.button(sq, key=f"sq_btn_{idx}", use_container_width=True):
-                    st.session_state.selected_sample_query = sq
-                    st.rerun()
+    # ── Chat input (always at the bottom) ──
+    if ingested_files:
+        user_input = st.chat_input(
+            "Ask a question about your documents…",
+            key="chat_input_main"
+        )
+        if user_input:
+            # Immediately show user bubble
+            with st.chat_message("user", avatar="👤"):
+                st.markdown(user_input)
+
+            # Create a new conversation if this is the first message
+            if st.session_state.current_conv is None:
+                new_conv = cm.new_conversation()
+                new_conv["title"] = user_input[:50]
+                st.session_state.current_conv = new_conv
+
+            # Append user message to state
+            st.session_state.current_conv["messages"].append({
+                "role": "user",
+                "content": user_input,
+                "timestamp": datetime.now().isoformat()
+            })
+
+            # Query RAG and stream assistant response
+            with st.chat_message("assistant", avatar="🤖"):
+                with st.spinner("Thinking…"):
+                    resp = rag.query(user_input)
+
+                answer    = resp.get("answer", "")
+                citations = resp.get("citations", [])
+                sources   = resp.get("sources", [])
+
+                st.markdown(answer)
+                if "answer not in documents" not in answer.lower():
+                    _render_citations(citations, sources)
+
+            # Append assistant message + persist
+            st.session_state.current_conv["messages"].append({
+                "role": "assistant",
+                "content": answer,
+                "citations": citations,
+                "sources": sources,
+                "timestamp": datetime.now().isoformat()
+            })
+            cm.save(st.session_state.current_conv)
+            st.rerun()
+    else:
+        st.info(
+            "💡 Open **📄 Documents** in the sidebar and click **🚀 Index PDFs** "
+            "to start chatting."
+        )
