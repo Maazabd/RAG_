@@ -619,7 +619,7 @@ else:
                                 "timestamp": datetime.now().isoformat()
                             })
                             with st.spinner("Thinking…"):
-                                resp = rag.query(q)
+                                resp = rag.smart_query(q)
                             new_conv["messages"].append({
                                 "role": "assistant",
                                 "content": resp["answer"],
@@ -647,7 +647,7 @@ else:
     # ── Chat input (always at the bottom) ──
     if ingested_files:
         user_input = st.chat_input(
-            "Ask a question about your documents…",
+            "Message DocuSense — ask a question or just say hi!",
             key="chat_input_main"
         )
         if user_input:
@@ -668,17 +668,19 @@ else:
                 "timestamp": datetime.now().isoformat()
             })
 
-            # Query RAG and stream assistant response
+            # Route through smart_query (handles both conversational and document queries)
             with st.chat_message("assistant", avatar="🤖"):
                 with st.spinner("Thinking…"):
-                    resp = rag.query(user_input)
+                    resp = rag.smart_query(user_input)
 
+                intent    = resp.get("intent", "document_query")
                 answer    = resp.get("answer", "")
                 citations = resp.get("citations", [])
                 sources   = resp.get("sources", [])
 
                 st.markdown(answer)
-                if "answer not in documents" not in answer.lower():
+                # Only show citations for document queries with a real answer
+                if intent == "document_query" and "answer not in documents" not in answer.lower():
                     _render_citations(citations, sources)
 
             # Append assistant message + persist

@@ -449,3 +449,108 @@ class RAGEngine:
                 "citations": [],
                 "sources": []
             }
+
+    # ──────────────────────────────────────────────────────────────
+    # Intent detection & conversational routing
+    # ──────────────────────────────────────────────────────────────
+
+    def classify_intent(self, message: str) -> str:
+        """Return 'conversational' or 'document_query' based on the user message.
+
+        Uses a fast Groq call with a minimal prompt so latency is negligible.
+        Falls back to 'document_query' on any error so the RAG pipeline is always tried.
+        """
+        if not self.groq_client:
+            return "document_query"
+
+        system_prompt = (
+            "You are an intent classifier for a document Q&A assistant. "
+            "Classify the user message as exactly one of:\n"
+            "  conversational  — greetings, small talk, questions about the assistant "
+            "itself (name, capabilities, who made you, etc.), thanks, or any message "
+            "that does NOT require searching documents.\n"
+            "  document_query  — any request for specific information, facts, data, "
+            "summaries, or details that would come from documents.\n\n"
+            "Respond with ONLY one word: either 'conversational' or 'document_query'. "
+            "No punctuation, no explanation."
+        )
+        try:
+            resp = self.groq_client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": message}
+                ],
+                model=GROQ_MODEL,
+                temperature=0.0,
+                max_tokens=5,
+            )
+            label = resp.choices[0].message.content.strip().lower()
+            if "conversational" in label:
+                return "conversational"
+        except Exception as e:
+            print(f"Intent classification error: {e}")
+        return "document_query"
+
+    def conversational_response(self, message: str) -> str:
+        """Generate a friendly, natural reply for conversational messages.
+
+        The assistant introduces itself as DocuSense and reminds the user it
+        specialises in answering questions about their uploaded PDF documents.
+        """
+        if not self.groq_client:
+            return "Hi! I'm DocuSense, your document Q&A assistant. Ask me anything about your PDFs!"
+
+        system_prompt = (
+            "You are DocuSense, a friendly and helpful AI assistant that specialises in "
+            "answering questions about the user's uploaded PDF documents (powered by ChromaDB & Groq). "
+            "Respond naturally and warmly to the user's conversational message. "
+            "Keep replies concise (1-3 sentences). "
+            "If the user asks what you can do, explain that you can search and answer questions "
+            "from their indexed PDF documents with exact citations. "
+            "Do NOT make up information about specific documents."
+        )
+        try:
+            resp = self.groq_client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": message}
+                ],
+                model=GROQ_MODEL,
+                temperature=0.7,
+                max_tokens=200,
+            )
+            return resp.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"Conversational response error: {e}")
+            return "Hi! I'm DocuSense — ask me anything about your uploaded PDF documents."
+
+    def smart_query(self, message: str) -> dict:
+        """Unified entry point.
+
+        1. Classifies the message as 'conversational' or 'document_query'.
+        2. For conversational messages → returns a friendly direct reply (no RAG, no citations).
+        3. For document queries      → runs the full RAG pipeline via query().
+
+        Return format is always:
+            {
+                "intent":    "conversational" | "document_query",
+                "answer":    str,
+                "citations": list,
+                "sources":   list,
+            }
+        """
+        intent = self.classify_intent(message)
+
+        if intent == "conversational":
+            answer = self.conversational_response(message)
+            return {
+                "intent":    "conversational",
+                "answer":    answer,
+                "citations": [],
+                "sources":   [],
+            }
+
+        # Document query — full RAG pipeline
+        result = self.query(message)
+        result["intent"] = "document_query"
+        return result
