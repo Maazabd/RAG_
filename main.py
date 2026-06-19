@@ -8,6 +8,7 @@ from datetime import datetime, date, timedelta
 from rag_engine import RAGEngine
 import conversation_manager as cm
 from fpdf import FPDF
+from st_keyup import st_keyup
 
 # ──────────────────────────────────────────────
 # Constants
@@ -436,30 +437,31 @@ def _export_txt(msgs: list) -> str:
 def _export_pdf(msgs: list, title: str) -> bytes:
     pdf = FPDF()
     pdf.add_page()
-    pdf.add_font("DejaVu", "", "C:\\Windows\\Fonts\\arial.ttf", uni=True)
-    pdf.set_font("DejaVu", size=12)
+    pdf.set_font("helvetica", size=12)
     
-    pdf.set_font("DejaVu", style="B", size=16)
+    pdf.set_font("helvetica", style="B", size=16)
     pdf.cell(200, 10, txt=title, ln=True, align="C")
-    pdf.set_font("DejaVu", size=12)
+    pdf.set_font("helvetica", size=12)
     pdf.ln(10)
     
     for m in msgs:
         role = "User" if m["role"] == "user" else "DocuSense"
-        pdf.set_font("DejaVu", style="B", size=12)
+        pdf.set_font("helvetica", style="B", size=12)
         pdf.multi_cell(0, 10, txt=f"{role}:")
-        pdf.set_font("DejaVu", size=11)
+        pdf.set_font("helvetica", size=11)
         # remove emojis which FPDF might struggle with
-        content = m['content']
+        content = m['content'].encode("latin-1", "ignore").decode("latin-1")
         pdf.multi_cell(0, 8, txt=content)
         if role == "DocuSense" and m.get("citations"):
             pdf.ln(2)
-            pdf.set_font("DejaVu", style="I", size=10)
+            pdf.set_font("helvetica", style="I", size=10)
             pdf.multi_cell(0, 6, txt="Sources:")
             for c in m["citations"]:
-                pdf.multi_cell(0, 6, txt=f"  - {c.get('source', '')} (Page {c.get('page', '')})")
+                source_txt = f"  - {c.get('source', '')} (Page {c.get('page', '')})"
+                source_txt = source_txt.encode("latin-1", "ignore").decode("latin-1")
+                pdf.multi_cell(0, 6, txt=source_txt)
         pdf.ln(5)
-        pdf.set_font("DejaVu", size=10)
+        pdf.set_font("helvetica", size=10)
         pdf.cell(0, 0, txt="-" * 60, ln=True)
         pdf.ln(5)
     
@@ -550,7 +552,7 @@ with st.sidebar:
                 st.error(f"PDF export error: {e}")
 
     # ── Conversation history ──
-    search_query = st.text_input("🔍 Search chats...", key="chat_search", label_visibility="collapsed", placeholder="🔍 Search chats...")
+    search_query = st_keyup("🔍 Search chats...", key="chat_search", label_visibility="collapsed", placeholder="🔍 Search chats...")
     
     all_convs = cm.load_all()
     if search_query:
