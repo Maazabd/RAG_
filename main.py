@@ -51,6 +51,7 @@ _defaults = {
     "pending_delete_doc": None,
     "cached_suggested_questions": [],
     "last_ingested_count": 0,
+    "pending_query": None,      # queued RAG call — set before rerun to avoid welcome flash
 }
 for k, v in _defaults.items():
     if k not in st.session_state:
@@ -144,7 +145,7 @@ div.stButton > button {
     border-radius: 8px !important;
     font-weight: 600 !important;
     font-size: 0.9rem !important;
-    transition: all 0.2s ease !important;
+    transition: all 0.18s ease !important;
 }
 div.stButton > button[kind="primary"] {
     background: linear-gradient(135deg,#6366f1,#a855f7) !important;
@@ -167,28 +168,99 @@ div.stButton > button[kind="secondary"]:hover {
     color: #6366f1 !important;
 }
 
-/* ── Sidebar conversation buttons ── */
-section[data-testid="stSidebar"] div.stButton > button[kind="secondary"] {
+/* ═══════════════════════════════════════════
+   Sidebar — conversation list
+═══════════════════════════════════════════ */
+
+/* Title column button (secondary = inactive conv) */
+section[data-testid="stSidebar"] div[data-testid="column"]:first-child
+  div.stButton > button[kind="secondary"] {
     background: transparent !important;
     border: none !important;
     text-align: left !important;
     justify-content: flex-start !important;
-    color: #334155 !important;
+    color: #475569 !important;
     font-weight: 400 !important;
-    border-radius: 8px !important;
-    padding: 8px 10px !important;
+    font-size: 0.78rem !important;
+    border-radius: 7px !important;
+    padding: 5px 8px !important;
+    min-height: 28px !important;
+    line-height: 1.3 !important;
+    box-shadow: none !important;
 }
-section[data-testid="stSidebar"] div.stButton > button[kind="secondary"]:hover {
-    background: rgba(99,102,241,0.1) !important;
+section[data-testid="stSidebar"] div[data-testid="column"]:first-child
+  div.stButton > button[kind="secondary"]:hover {
+    background: rgba(99,102,241,0.09) !important;
     color: #4f46e5 !important;
     border: none !important;
+    transform: none !important;
 }
-section[data-testid="stSidebar"] div.stButton > button[kind="primary"] {
+/* Active conversation (primary) */
+section[data-testid="stSidebar"] div[data-testid="column"]:first-child
+  div.stButton > button[kind="primary"] {
     text-align: left !important;
     justify-content: flex-start !important;
+    font-size: 0.78rem !important;
     font-weight: 600 !important;
-    border-radius: 8px !important;
-    padding: 8px 10px !important;
+    border-radius: 7px !important;
+    padding: 5px 8px !important;
+    min-height: 28px !important;
+    line-height: 1.3 !important;
+}
+
+/* ── Trash delete buttons (last column in sidebar rows) ── */
+section[data-testid="stSidebar"] div[data-testid="column"]:last-child
+  div.stButton > button {
+    background: transparent !important;
+    border: none !important;
+    border-radius: 6px !important;
+    color: #cbd5e1 !important;
+    font-size: 0.75rem !important;
+    padding: 3px 5px !important;
+    min-height: 26px !important;
+    box-shadow: none !important;
+    transition: all 0.15s ease !important;
+}
+section[data-testid="stSidebar"] div[data-testid="column"]:last-child
+  div.stButton > button:hover {
+    background: rgba(239,68,68,0.1) !important;
+    color: #ef4444 !important;
+    border: none !important;
+    transform: none !important;
+    box-shadow: none !important;
+}
+
+/* ── New Chat button (full-width, no column) ── */
+section[data-testid="stSidebar"] > div div.stButton > button[kind="primary"] {
+    text-align: center !important;
+    justify-content: center !important;
+}
+
+/* ═══════════════════════════════════════════
+   Welcome screen — suggested question chips
+═══════════════════════════════════════════ */
+.main div[data-testid="stColumn"] div.stButton > button[kind="secondary"] {
+    font-size: 0.8rem !important;
+    font-weight: 500 !important;
+    padding: 7px 12px !important;
+    text-align: left !important;
+    justify-content: flex-start !important;
+    white-space: normal !important;
+    height: auto !important;
+    min-height: 36px !important;
+    line-height: 1.4 !important;
+    border-radius: 10px !important;
+    border: 1px solid #e2e8f0 !important;
+    background: #ffffff !important;
+    color: #475569 !important;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05) !important;
+}
+.main div[data-testid="stColumn"] div.stButton > button[kind="secondary"]:hover {
+    background: linear-gradient(135deg,rgba(99,102,241,0.06),rgba(168,85,247,0.06)) !important;
+    border-color: rgba(99,102,241,0.35) !important;
+    color: #4f46e5 !important;
+    box-shadow: 0 2px 8px rgba(99,102,241,0.1) !important;
+    transform: translateY(-1px) !important;
 }
 
 /* ── Source badges ── */
@@ -597,11 +669,20 @@ pdfjsLib.getDocument({{data:buf}}).promise.then(function(pdf){{
 
 # ── Chat Mode ───────────────────────────────
 else:
-    conv   = st.session_state.current_conv
-    msgs   = conv["messages"] if conv else []
+    conv = st.session_state.current_conv
+    msgs = conv["messages"] if conv else []
 
-    # ── Welcome screen (no active conversation) ──
-    if not msgs:
+    # ── Declare chat_input FIRST so its value suppresses the welcome screen instantly ──
+    if ingested_files:
+        user_input = st.chat_input(
+            "Message DocuSense — ask a question or just say hi!",
+            key="chat_input_main"
+        )
+    else:
+        user_input = None
+
+    # ── Welcome screen: only when no messages AND no active submission in progress ──
+    if not msgs and not user_input and not st.session_state.pending_query:
         st.markdown("""
         <div class="welcome-wrap">
             <h1 class="welcome-title">DocuSense RAG</h1>
@@ -618,39 +699,28 @@ else:
             sq = st.session_state.cached_suggested_questions
             if sq:
                 st.markdown(
-                    "<p style='text-align:center;color:#64748b;font-size:0.9rem;"
-                    "margin-bottom:14px;'>💡 <b>Try one of these to get started:</b></p>",
+                    "<p style='text-align:center;color:#64748b;font-size:0.85rem;"
+                    "margin-bottom:12px;'>💡 <b>Try asking:</b></p>",
                     unsafe_allow_html=True
                 )
                 cols = st.columns(2)
                 for i, q in enumerate(sq):
                     with cols[i % 2]:
                         if st.button(q, key=f"sq_{i}", use_container_width=True, type="secondary"):
-                            # Bootstrap a new conversation from the suggested question
                             new_conv = cm.new_conversation()
                             new_conv["title"] = q[:50]
                             new_conv["messages"].append({
-                                "role": "user",
-                                "content": q,
+                                "role": "user", "content": q,
                                 "timestamp": datetime.now().isoformat()
                             })
-                            with st.spinner("Thinking…"):
-                                resp = rag.smart_query(q)
-                            new_conv["messages"].append({
-                                "role": "assistant",
-                                "content": resp["answer"],
-                                "citations": resp.get("citations", []),
-                                "sources": resp.get("sources", []),
-                                "timestamp": datetime.now().isoformat()
-                            })
-                            cm.save(new_conv)
                             st.session_state.current_conv = new_conv
+                            st.session_state.pending_query = q
                             st.rerun()
 
     # ── Render existing conversation messages ──
-    else:
+    elif msgs:
         for msg in msgs:
-            role = msg["role"]
+            role   = msg["role"]
             avatar = "👤" if role == "user" else "🤖"
             with st.chat_message(role, avatar=avatar):
                 st.markdown(msg["content"])
@@ -660,46 +730,21 @@ else:
                         msg.get("sources", [])
                     )
 
-    # ── Chat input (always at the bottom) ──
-    if ingested_files:
-        user_input = st.chat_input(
-            "Message DocuSense — ask a question or just say hi!",
-            key="chat_input_main"
-        )
-        if user_input:
-            # Immediately show user bubble
-            with st.chat_message("user", avatar="👤"):
-                st.markdown(user_input)
-
-            # Create a new conversation if this is the first message
-            if st.session_state.current_conv is None:
-                new_conv = cm.new_conversation()
-                new_conv["title"] = user_input[:50]
-                st.session_state.current_conv = new_conv
-
-            # Append user message to state
-            st.session_state.current_conv["messages"].append({
-                "role": "user",
-                "content": user_input,
-                "timestamp": datetime.now().isoformat()
-            })
-
-            # Route through smart_query (handles both conversational and document queries)
-            with st.chat_message("assistant", avatar="🤖"):
-                with st.spinner("Thinking…"):
-                    resp = rag.smart_query(user_input)
-
-                intent    = resp.get("intent", "document_query")
-                answer    = resp.get("answer", "")
-                citations = resp.get("citations", [])
-                sources   = resp.get("sources", [])
-
-                st.markdown(answer)
-                # Only show citations for document queries with a real answer
-                if intent == "document_query" and "answer not in documents" not in answer.lower():
-                    _render_citations(citations, sources)
-
-            # Append assistant message + persist
+    # ── Process pending RAG query (runs after messages are shown) ──
+    if st.session_state.pending_query:
+        query = st.session_state.pending_query
+        st.session_state.pending_query = None
+        with st.chat_message("assistant", avatar="🤖"):
+            with st.spinner("Thinking…"):
+                resp = rag.smart_query(query)
+            intent    = resp.get("intent", "document_query")
+            answer    = resp.get("answer", "")
+            citations = resp.get("citations", [])
+            sources   = resp.get("sources", [])
+            st.markdown(answer)
+            if intent == "document_query" and "answer not in documents" not in answer.lower():
+                _render_citations(citations, sources)
+        if st.session_state.current_conv:
             st.session_state.current_conv["messages"].append({
                 "role": "assistant",
                 "content": answer,
@@ -708,8 +753,28 @@ else:
                 "timestamp": datetime.now().isoformat()
             })
             cm.save(st.session_state.current_conv)
-            st.rerun()
-    else:
+        st.rerun()
+
+    # ── Handle new user message from chat_input ──
+    if user_input:
+        with st.chat_message("user", avatar="👤"):
+            st.markdown(user_input)
+
+        if st.session_state.current_conv is None:
+            new_conv = cm.new_conversation()
+            new_conv["title"] = user_input[:50]
+            st.session_state.current_conv = new_conv
+
+        st.session_state.current_conv["messages"].append({
+            "role": "user",
+            "content": user_input,
+            "timestamp": datetime.now().isoformat()
+        })
+        st.session_state.pending_query = user_input
+        cm.save(st.session_state.current_conv)   # save with just the user message
+        st.rerun()
+
+    if not ingested_files:
         st.info(
             "💡 Open **📄 Documents** in the sidebar and click **🚀 Index PDFs** "
             "to start chatting."
